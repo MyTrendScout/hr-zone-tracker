@@ -165,19 +165,19 @@ function currentPhase(weeks) {
 }
 
 function buildWeekPlan(longRunDay, totalDays) {
-  const plan = DAYS.map((d, i) => ({ idx: i, day: d, type: "Rest", zone: null, notes: "" }));
-  plan[longRunDay] = { idx: longRunDay, day: DAYS[longRunDay], type: "Long Run",  zone: "Base (Z2)",     notes: "Stay in Zone 2 the whole run. Slow down if needed." };
+  const plan = DAYS.map((d, i) => ({ idx: i, day: d, type: "Rest", zone: null, notes: "", duration: "" }));
+  plan[longRunDay] = { idx: longRunDay, day: DAYS[longRunDay], type: "Long Run",  zone: "Base (Z2)",     notes: "Stay in Zone 2 the whole run. Slow down if needed.", duration: "90–120 min" };
   const placed = [longRunDay];
   let rem = totalDays - 1;
   const tempoDay = (longRunDay + 4) % 7;
   if (rem > 0 && !placed.includes(tempoDay)) {
-    plan[tempoDay] = { idx: tempoDay, day: DAYS[tempoDay], type: "Tempo Run", zone: "Speed (Z3)", notes: "10 min warm-up → 20–30 min at Zone 3 → 10 min cool-down." };
+    plan[tempoDay] = { idx: tempoDay, day: DAYS[tempoDay], type: "Tempo Run", zone: "Speed (Z3)", notes: "10 min warm-up → 20–30 min at Zone 3 → 10 min cool-down.", duration: "50–60 min" };
     placed.push(tempoDay); rem--;
   }
   for (let offset = 1; offset < 7 && rem > 0; offset++) {
     const d = (longRunDay + offset) % 7;
     if (!placed.includes(d)) {
-      plan[d] = { idx: d, day: DAYS[d], type: "Easy Run", zone: "Recovery (Z1)", notes: "Conversational pace only. No watch pressure." };
+      plan[d] = { idx: d, day: DAYS[d], type: "Easy Run", zone: "Recovery (Z1)", notes: "Conversational pace only. No watch pressure.", duration: "30–45 min" };
       placed.push(d); rem--;
     }
   }
@@ -596,6 +596,68 @@ function Dashboard() {
   const recentWeights = workouts.filter(w => w.weightLbs).slice(0, 7).map(w => w.weightLbs);
   const weightWarning = checkWeightFlag(recentWeights);
   const retestDue     = zones?.lastTested && daysSince(zones.lastTested) > 28;
+  const todayIdx      = new Date().getDay();
+  const todayPlan     = plan ? plan[todayIdx] : null;
+
+  const raceCard = weeks != null ? div("card",
+    h2("Race Overview"),
+    div("stat-row",
+      statBox("Race Date", new Date(profile.raceDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })),
+      statBox("Weeks Out", weeks),
+      statBox("Phase", phase.name)
+    ),
+    div("phase-note", phase.note),
+    prediction ? div("prediction-box",
+      p(el("span", { className: "pred-main" }, `📈 Predicted finish: ${prediction.timeStr} (${prediction.paceStr})`)),
+      goal ? p(`🎯 Your goal: ${goal.targetFinish} (${goal.targetPace}/mi)`) : null,
+      goal?.validation ? div(`goal-status ${goal.validation.status}`, goal.validation.msg) : null
+    ) : p("Log a workout to see your predicted marathon finish time.")
+  ) : null;
+
+  const zonesCard = zones ? div("card",
+    h2("Your HR Zones"),
+    el("div", { className: "zone-method" }, `Method: ${zones.method === "tested" ? "Field test ✓" : "Estimated"}`),
+    zoneBar(zones.z1, "z1"), zoneBar(zones.z2, "z2"), zoneBar(zones.z3, "z3"),
+    btn("Update Zones (Run Field Test)", () => setState({ view: "test" }), "btn-secondary")
+  ) : null;
+
+  // Today's workout card — detailed instructions + log button
+  const todayCard = todayPlan ? div("card today-card",
+    h2(`Today — ${DNAMES[todayIdx]}`),
+    todayPlan.type === "Rest"
+      ? div("today-rest", "Rest day. Recover, hydrate, sleep well.")
+      : div("today-workout",
+          div("today-run-type", todayPlan.type),
+          div("today-run-zone", todayPlan.zone),
+          div("today-run-duration", `⏱ ${todayPlan.duration}`),
+          div("today-run-instructions", todayPlan.notes),
+          btn("Log Today's Results →", () => setState({ view: "log-workout" }), "btn-log-today")
+        )
+  ) : null;
+
+  const weekCard = plan ? div("card",
+    h2("This Week"),
+    div("week-plan",
+      plan.map(day => {
+        const isToday = day.idx === todayIdx;
+        return div(`day-slot${day.type === "Rest" ? " rest" : ""}${isToday ? " today" : ""}`,
+          el("strong", null, day.day),
+          el("span", { className: "day-type" }, day.type),
+          day.zone     ? el("span", { className: "day-zone" },     day.zone)     : null,
+          day.duration ? el("span", { className: "day-duration" }, day.duration) : null
+        );
+      })
+    )
+  ) : null;
+
+  const trackCard = div("card",
+    h2("Training"),
+    div("menu",
+      btn("Log a Workout",          () => setState({ view: "log-workout" })),
+      btn("View Workout History",   () => setState({ view: "history" })),
+      btn("View Full Training Plan",() => setState({ view: "plan" }))
+    )
+  );
 
   return div("page",
     el("header", null,
@@ -606,52 +668,13 @@ function Dashboard() {
       )
     ),
 
-    retestDue ? div("banner banner-info", "⏱ 4+ weeks since your last field test. ", el("span", { className: "banner-link", onClick: () => setState({ view: "test" }) }, "Run it now →")) : null,
-    weightWarning ? div("banner banner-warning", `⚖️ ${weightWarning}`) : null,
-    !goal ? div("banner banner-info", "🎯 No race goal set yet. ", el("span", { className: "banner-link", onClick: () => setState({ view: "setup-goal" }) }, "Set one now →")) : null,
+    retestDue    ? div("banner banner-info",    "⏱ 4+ weeks since your last field test. ", el("span", { className: "banner-link", onClick: () => setState({ view: "test" }) }, "Run it now →")) : null,
+    weightWarning? div("banner banner-warning",  `⚖️ ${weightWarning}`) : null,
+    !goal        ? div("banner banner-info",     "🎯 No race goal set yet. ", el("span", { className: "banner-link", onClick: () => setState({ view: "setup-goal" }) }, "Set one now →")) : null,
 
-    weeks != null ? div("card",
-      h2("Race Overview"),
-      div("stat-row",
-        statBox("Race Date", new Date(profile.raceDate + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })),
-        statBox("Weeks Out", weeks),
-        statBox("Phase", phase.name)
-      ),
-      div("phase-note", phase.note),
-      prediction ? div("prediction-box",
-        p(el("span", { className: "pred-main" }, `📈 Predicted finish: ${prediction.timeStr} (${prediction.paceStr})`)),
-        goal ? p(`🎯 Your goal: ${goal.targetFinish} (${goal.targetPace}/mi)`) : null,
-        goal?.validation ? div(`goal-status ${goal.validation.status}`, goal.validation.msg) : null
-      ) : p("Log a workout to see your predicted marathon finish time.")
-    ) : null,
-
-    zones ? div("card",
-      h2("Your HR Zones"),
-      el("div", { className: "zone-method" }, `Method: ${zones.method === "tested" ? "Field test ✓" : "Estimated"}`),
-      zoneBar(zones.z1, "z1"), zoneBar(zones.z2, "z2"), zoneBar(zones.z3, "z3"),
-      btn("Update Zones (Run Field Test)", () => setState({ view: "test" }), "btn-secondary")
-    ) : null,
-
-    plan ? div("card",
-      h2("This Week"),
-      div("week-plan",
-        plan.map(day =>
-          div(`day-slot ${day.type === "Rest" ? "rest" : "active"}`,
-            el("strong", null, day.day),
-            el("span", { className: "day-type" }, day.type),
-            day.zone ? el("span", { className: "day-zone" }, day.zone) : null
-          )
-        )
-      )
-    ) : null,
-
-    div("card",
-      h2("Track Your Training"),
-      div("menu",
-        btn("Log a Workout",          () => setState({ view: "log-workout" })),
-        btn("View Workout History",   () => setState({ view: "history" })),
-        btn("View Full Training Plan",() => setState({ view: "plan" }))
-      )
+    div("dashboard-grid",
+      div("dash-col", raceCard, zonesCard),
+      div("dash-col", todayCard, weekCard, trackCard)
     )
   );
 }

@@ -297,7 +297,39 @@ ol li { margin-bottom: 6px; }
 .btn-reject  { background: #c62828; color: white; padding: 8px 12px; font-size: 13px; width: auto; margin: 0; border-radius: 6px; }
 .btn-reject:hover  { background: #b71c1c; }
 
-/* ── Responsive ── */
+/* ── Dashboard two-column grid ── */
+.dashboard-grid { display: flex; flex-direction: column; }
+.dash-col { display: flex; flex-direction: column; }
+
+/* ── Today's workout card ── */
+.today-card { border-left: 4px solid #0066ff; }
+.today-rest { color: #888; font-style: italic; padding: 8px 0; }
+.today-workout { display: flex; flex-direction: column; gap: 6px; }
+.today-run-type { font-size: 1.1rem; font-weight: 700; color: #0066ff; }
+.today-run-zone { font-size: 13px; color: #555; }
+.today-run-duration { font-size: 14px; font-weight: 600; color: #333; }
+.today-run-instructions { font-size: 13px; color: #555; line-height: 1.5; padding: 8px 12px; background: #f5f7ff; border-radius: 8px; }
+.btn-log-today { margin-top: 4px; background: #0066ff; color: white; padding: 10px; font-size: 14px; font-weight: 700; width: 100%; border-radius: 8px; }
+
+/* ── Day duration label ── */
+.day-duration { display: block; font-size: 11px; color: #888; margin-top: 2px; }
+
+/* ── Today highlight in week grid ── */
+.day-slot.today { background: #dbeafe; border: 2px solid #0066ff; }
+.day-slot.today .day-type { color: #0044cc; }
+
+/* ── Desktop two-column layout ── */
+@media (min-width: 768px) {
+  .page { max-width: 980px; }
+  .dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 16px;
+    align-items: start;
+  }
+}
+
+/* ── Mobile ── */
 @media (max-width: 480px) {
   .stat-row { flex-wrap: wrap; }
   .stat-box { min-width: 80px; }
