@@ -310,6 +310,7 @@ ol li { margin-bottom: 6px; }
 .today-run-duration { font-size: 14px; font-weight: 600; color: #333; }
 .today-run-instructions { font-size: 13px; color: #555; line-height: 1.5; padding: 8px 12px; background: #f5f7ff; border-radius: 8px; }
 .btn-log-today { margin-top: 4px; background: #0066ff; color: white; padding: 10px; font-size: 14px; font-weight: 700; width: 100%; border-radius: 8px; }
+.cutback-badge { display: inline-block; background: #fff3e0; color: #b64500; border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700; margin-bottom: 10px; }
 
 /* ── Day duration label ── */
 .day-duration { display: block; font-size: 11px; color: #888; margin-top: 2px; }

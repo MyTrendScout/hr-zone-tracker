@@ -95,6 +95,13 @@ function calcZones(maxHR, restingHR) {
 // ═══════════════════════════════════════════════════════════════
 const MARATHON_MI = 26.2188;
 
+const FITNESS_LEVELS = {
+  beginner:     { label: "Just starting — walk/jog 20–30 min",           startLong: 30, increment: 8,  maxLong: 150, easyDur: "25–30 min", tempoDur: "35–45 min" },
+  novice:       { label: "Getting going — run 30–45 min comfortably",     startLong: 45, increment: 10, maxLong: 165, easyDur: "30–40 min", tempoDur: "45–55 min" },
+  intermediate: { label: "Solid base — done a 5K/10K, can run an hour",  startLong: 60, increment: 12, maxLong: 180, easyDur: "40–50 min", tempoDur: "50–60 min" },
+  advanced:     { label: "Strong runner — half marathon or better",       startLong: 80, increment: 15, maxLong: 195, easyDur: "45–55 min", tempoDur: "55–65 min" },
+};
+
 function riegelPredict(timeSec, distMi, targetMi) {
   return timeSec * Math.pow(targetMi / distMi, 1.06);
 }
@@ -164,20 +171,59 @@ function currentPhase(weeks) {
   return               { name: "Race Week",      note: "Rest, hydrate, believe. You're ready." };
 }
 
-function buildWeekPlan(longRunDay, totalDays) {
+function getWeeklyDurations(profile) {
+  const level = FITNESS_LEVELS[profile.fitnessLevel] || null;
+  if (!level) return { long: "90–120 min", easy: "30–45 min", tempo: "50–60 min", isCutback: false };
+
+  const start     = profile.trainingStart || profile.createdAt;
+  const weeksIn   = Math.max(0, Math.floor((Date.now() - new Date(start)) / (7 * 24 * 60 * 60 * 1000)));
+  const weeksToRace = profile.raceDate ? weeksUntil(profile.raceDate) : 99;
+
+  // Taper
+  if (weeksToRace <= 1) return { long: "20–25 min easy",               easy: "20 min easy", tempo: "20 min easy only",  isCutback: false };
+  if (weeksToRace === 2) { const t = Math.round(level.maxLong * 0.55); return { long: `${t} min`, easy: level.easyDur, tempo: level.tempoDur, isCutback: false }; }
+  if (weeksToRace === 3) { const t = Math.round(level.maxLong * 0.75); return { long: `${t} min`, easy: level.easyDur, tempo: level.tempoDur, isCutback: false }; }
+
+  // 3:1 block progression
+  const blockWeek = weeksIn % 4;   // 0,1,2 = build  |  3 = cutback
+  const blockNum  = Math.floor(weeksIn / 4);
+  let longMins = blockWeek === 3
+    ? level.startLong + blockNum * 3 * level.increment          // cutback: back to block start
+    : level.startLong + (blockNum * 3 + blockWeek) * level.increment; // build week
+  longMins = Math.min(longMins, level.maxLong);
+
+  return {
+    long:      `${longMins} min${blockWeek === 3 ? " — recovery week" : ""}`,
+    easy:      level.easyDur,
+    tempo:     level.tempoDur,
+    isCutback: blockWeek === 3
+  };
+}
+
+function buildWeekPlan(longRunDay, totalDays, durations) {
+  const longDur  = durations?.long  || "90–120 min";
+  const easyDur  = durations?.easy  || "30–45 min";
+  const tempoDur = durations?.tempo || "50–60 min";
+
   const plan = DAYS.map((d, i) => ({ idx: i, day: d, type: "Rest", zone: null, notes: "", duration: "" }));
-  plan[longRunDay] = { idx: longRunDay, day: DAYS[longRunDay], type: "Long Run",  zone: "Base (Z2)",     notes: "Stay in Zone 2 the whole run. Slow down if needed.", duration: "90–120 min" };
+  plan[longRunDay] = { idx: longRunDay, day: DAYS[longRunDay], type: "Long Run",  zone: "Base (Z2)",
+    notes: `Stay in Zone 2 the whole run. Walk if your HR climbs to Zone 3. Target: ${longDur}.`,
+    duration: longDur };
   const placed = [longRunDay];
   let rem = totalDays - 1;
   const tempoDay = (longRunDay + 4) % 7;
   if (rem > 0 && !placed.includes(tempoDay)) {
-    plan[tempoDay] = { idx: tempoDay, day: DAYS[tempoDay], type: "Tempo Run", zone: "Speed (Z3)", notes: "10 min warm-up → 20–30 min at Zone 3 → 10 min cool-down.", duration: "50–60 min" };
+    plan[tempoDay] = { idx: tempoDay, day: DAYS[tempoDay], type: "Tempo Run", zone: "Speed (Z3)",
+      notes: `10 min easy warm-up (Z1) → middle portion at Zone 3 → 10 min easy cool-down (Z1). Total: ${tempoDur}.`,
+      duration: tempoDur };
     placed.push(tempoDay); rem--;
   }
   for (let offset = 1; offset < 7 && rem > 0; offset++) {
     const d = (longRunDay + offset) % 7;
     if (!placed.includes(d)) {
-      plan[d] = { idx: d, day: DAYS[d], type: "Easy Run", zone: "Recovery (Z1)", notes: "Conversational pace only. No watch pressure.", duration: "30–45 min" };
+      plan[d] = { idx: d, day: DAYS[d], type: "Easy Run", zone: "Recovery (Z1)",
+        notes: `Conversational pace only — full sentences the whole way. Never let HR enter Zone 3. Target: ${easyDur}.`,
+        duration: easyDur };
       placed.push(d); rem--;
     }
   }
@@ -284,6 +330,7 @@ function getView() {
     case "setup-test":     return SetupTest();
     case "setup-prefs":    return SetupPrefs();
     case "setup-goal":     return SetupGoal();
+    case "update-plan":    return UpdatePlanPage();
     case "log-workout":    return LogWorkout();
     case "history":        return WorkoutHistory();
     case "plan":           return PlanPage();
@@ -527,13 +574,18 @@ function SetupTest() {
 // SETUP — Preferences
 // ═══════════════════════════════════════════════════════════════
 function SetupPrefs() {
+  const today = new Date().toISOString().split("T")[0];
   const save = async () => {
-    const raceDate     = document.getElementById("p-race")?.value;
-    const longRunDay   = parseInt(document.getElementById("p-lrd")?.value);
-    const trainingDays = parseInt(document.getElementById("p-days")?.value);
-    if (!raceDate)                    { showError("Please enter your race date."); return; }
+    const raceDate      = document.getElementById("p-race")?.value;
+    const trainingStart = document.getElementById("p-start")?.value;
+    const fitnessLevel  = document.getElementById("p-level")?.value;
+    const longRunDay    = parseInt(document.getElementById("p-lrd")?.value);
+    const trainingDays  = parseInt(document.getElementById("p-days")?.value);
+    if (!raceDate)                        { showError("Please enter your race date."); return; }
     if (new Date(raceDate) <= new Date()) { showError("Race date must be in the future."); return; }
-    const prefs = { raceDate, longRunDay, trainingDays };
+    if (!trainingStart)                   { showError("Please enter your training start date."); return; }
+    if (!fitnessLevel)                    { showError("Please select your current fitness level."); return; }
+    const prefs = { raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays };
     setState({ loading: true });
     await saveData("profile", { ...state.profile, ...prefs });
     setState({ profile: { ...state.profile, ...prefs }, loading: false, view: "setup-goal", error: null });
@@ -541,13 +593,46 @@ function SetupPrefs() {
 
   return div("page",
     div("setup-page",
-      div("step-indicator", "Step 3 of 4 — Training Preferences"),
-      h2("Plan your training"),
+      div("step-indicator", "Step 3 of 4 — Training Plan"),
+      h2("Build your training plan"),
       errorBanner(),
-      field("Race Date *", input({ id: "p-race", type: "date", min: new Date().toISOString().split("T")[0] })),
+      field("Race Date *", input({ id: "p-race", type: "date", min: today })),
+      field("Training Start Date *", input({ id: "p-start", type: "date", value: today })),
+      field("Current Fitness Level *", select("p-level", [
+        ["Select your level…", ""],
+        ...Object.entries(FITNESS_LEVELS).map(([k, v]) => [v.label, k])
+      ], "")),
       field("Long Run Day", select("p-lrd", DNAMES.map((d, i) => [d, i]), 6)),
       field("Training Days Per Week", select("p-days", [[3,3],[4,4],[5,5],[6,6]].map(([l,v]) => [`${l} days`, v]), 4)),
       btn("Next →", save)
+    )
+  );
+}
+
+function UpdatePlanPage() {
+  const today = new Date().toISOString().split("T")[0];
+  const save = async () => {
+    const fitnessLevel  = document.getElementById("up-level")?.value;
+    const trainingStart = document.getElementById("up-start")?.value;
+    if (!fitnessLevel)  { showError("Please select your fitness level."); return; }
+    if (!trainingStart) { showError("Please enter your training start date."); return; }
+    setState({ loading: true });
+    const updated = { ...state.profile, fitnessLevel, trainingStart };
+    await saveData("profile", updated);
+    setState({ profile: updated, loading: false, view: "dashboard", error: null });
+  };
+
+  return div("page",
+    div("card",
+      pageHeader("Update Training Plan", () => setState({ view: "dashboard" })),
+      p("Tell us where you are now so the plan starts at the right level and builds correctly."),
+      errorBanner(),
+      field("Current Fitness Level *", select("up-level", [
+        ["Select your level…", ""],
+        ...Object.entries(FITNESS_LEVELS).map(([k, v]) => [v.label, k])
+      ], state.profile?.fitnessLevel || "")),
+      field("Training Start Date *", input({ id: "up-start", type: "date", value: state.profile?.trainingStart || today })),
+      btn("Save & Rebuild Plan", save)
     )
   );
 }
@@ -592,10 +677,12 @@ function Dashboard() {
   const prediction    = getBestPrediction(workouts);
   const weeks         = profile?.raceDate ? weeksUntil(profile.raceDate) : null;
   const phase         = weeks != null ? currentPhase(weeks) : null;
-  const plan          = (profile?.raceDate && profile?.longRunDay != null) ? buildWeekPlan(profile.longRunDay, profile.trainingDays || 4) : null;
+  const durations     = profile ? getWeeklyDurations(profile) : null;
+  const plan          = (profile?.raceDate && profile?.longRunDay != null) ? buildWeekPlan(profile.longRunDay, profile.trainingDays || 4, durations) : null;
   const recentWeights = workouts.filter(w => w.weightLbs).slice(0, 7).map(w => w.weightLbs);
   const weightWarning = checkWeightFlag(recentWeights);
   const retestDue     = zones?.lastTested && daysSince(zones.lastTested) > 28;
+  const needsPlanSetup = profile && !profile.fitnessLevel;
   const todayIdx      = new Date().getDay();
   const todayPlan     = plan ? plan[todayIdx] : null;
 
@@ -624,6 +711,7 @@ function Dashboard() {
   // Today's workout card — detailed instructions + log button
   const todayCard = todayPlan ? div("card today-card",
     h2(`Today — ${DNAMES[todayIdx]}`),
+    durations?.isCutback ? div("cutback-badge", "Recovery Week — keep it easy") : null,
     todayPlan.type === "Rest"
       ? div("today-rest", "Rest day. Recover, hydrate, sleep well.")
       : div("today-workout",
@@ -668,6 +756,7 @@ function Dashboard() {
       )
     ),
 
+    needsPlanSetup? div("banner banner-warning", "📋 Your training plan isn't personalized yet — we don't know your fitness level. ", el("span", { className: "banner-link", onClick: () => setState({ view: "update-plan" }) }, "Fix this now →")) : null,
     retestDue    ? div("banner banner-info",    "⏱ 4+ weeks since your last field test. ", el("span", { className: "banner-link", onClick: () => setState({ view: "test" }) }, "Run it now →")) : null,
     weightWarning? div("banner banner-warning",  `⚖️ ${weightWarning}`) : null,
     !goal        ? div("banner banner-info",     "🎯 No race goal set yet. ", el("span", { className: "banner-link", onClick: () => setState({ view: "setup-goal" }) }, "Set one now →")) : null,
@@ -763,9 +852,10 @@ function WorkoutHistory() {
 function PlanPage() {
   const { profile } = state;
   if (!profile?.raceDate) return div("page", div("card", p("Complete setup to see your training plan.")));
-  const weeks = weeksUntil(profile.raceDate);
-  const phase = currentPhase(weeks);
-  const plan  = buildWeekPlan(profile.longRunDay ?? 6, profile.trainingDays || 4);
+  const weeks     = weeksUntil(profile.raceDate);
+  const phase     = currentPhase(weeks);
+  const durations = getWeeklyDurations(profile);
+  const plan      = buildWeekPlan(profile.longRunDay ?? 6, profile.trainingDays || 4, durations);
 
   return div("page",
     el("header", null, h1("Training Plan"), btn("← Back", () => setState({ view: "dashboard" }), "btn-back")),
