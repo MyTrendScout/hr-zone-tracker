@@ -743,7 +743,8 @@ function Dashboard() {
     div("menu",
       btn("Log a Workout",          () => setState({ view: "log-workout" })),
       btn("View Workout History",   () => setState({ view: "history" })),
-      btn("View Full Training Plan",() => setState({ view: "plan" }))
+      btn("View Full Training Plan",() => setState({ view: "plan" })),
+      btn("Update Fitness Level / Rebuild Plan", () => setState({ view: "update-plan" }), "btn-secondary")
     )
   );
 
