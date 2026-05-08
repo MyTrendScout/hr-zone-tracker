@@ -16,6 +16,8 @@ try {
 // ═══════════════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════════════
+let planViewMode = null; // "calendar" or "chart" — persists during session
+
 let state = {
   user:            null,
   profile:         null,
@@ -171,33 +173,35 @@ function currentPhase(weeks) {
   return               { name: "Race Week",      note: "Rest, hydrate, believe. You're ready." };
 }
 
-function getWeeklyDurations(profile) {
-  const level = FITNESS_LEVELS[profile.fitnessLevel] || null;
-  if (!level) return { long: "90–120 min", easy: "30–45 min", tempo: "50–60 min", isCutback: false };
+function calcDurationsForWeek(fitnessLevel, weeksIn, weeksToRace) {
+  const level = FITNESS_LEVELS[fitnessLevel] || null;
+  if (!level) return { long: "90–120 min", easy: "30–45 min", tempo: "50–60 min", isCutback: false, longMins: 105 };
 
-  const start     = profile.trainingStart || profile.createdAt;
-  const weeksIn   = Math.max(0, Math.floor((Date.now() - new Date(start)) / (7 * 24 * 60 * 60 * 1000)));
-  const weeksToRace = profile.raceDate ? weeksUntil(profile.raceDate) : 99;
+  if (weeksToRace <= 1) return { long: "20–25 min easy", easy: "20 min easy", tempo: "20 min easy", isCutback: false, longMins: 22 };
+  if (weeksToRace === 2) { const t = Math.round(level.maxLong * 0.55); return { long: `${t} min`, easy: level.easyDur, tempo: level.tempoDur, isCutback: false, longMins: t }; }
+  if (weeksToRace === 3) { const t = Math.round(level.maxLong * 0.75); return { long: `${t} min`, easy: level.easyDur, tempo: level.tempoDur, isCutback: false, longMins: t }; }
 
-  // Taper
-  if (weeksToRace <= 1) return { long: "20–25 min easy",               easy: "20 min easy", tempo: "20 min easy only",  isCutback: false };
-  if (weeksToRace === 2) { const t = Math.round(level.maxLong * 0.55); return { long: `${t} min`, easy: level.easyDur, tempo: level.tempoDur, isCutback: false }; }
-  if (weeksToRace === 3) { const t = Math.round(level.maxLong * 0.75); return { long: `${t} min`, easy: level.easyDur, tempo: level.tempoDur, isCutback: false }; }
-
-  // 3:1 block progression
-  const blockWeek = weeksIn % 4;   // 0,1,2 = build  |  3 = cutback
+  const blockWeek = weeksIn % 4;
   const blockNum  = Math.floor(weeksIn / 4);
   let longMins = blockWeek === 3
-    ? level.startLong + blockNum * 3 * level.increment          // cutback: back to block start
-    : level.startLong + (blockNum * 3 + blockWeek) * level.increment; // build week
+    ? level.startLong + blockNum * 3 * level.increment
+    : level.startLong + (blockNum * 3 + blockWeek) * level.increment;
   longMins = Math.min(longMins, level.maxLong);
 
   return {
-    long:      `${longMins} min${blockWeek === 3 ? " — recovery week" : ""}`,
+    long:      `${longMins} min${blockWeek === 3 ? " — recovery" : ""}`,
     easy:      level.easyDur,
     tempo:     level.tempoDur,
-    isCutback: blockWeek === 3
+    isCutback: blockWeek === 3,
+    longMins
   };
+}
+
+function getWeeklyDurations(profile) {
+  const start       = profile.trainingStart || profile.createdAt;
+  const weeksIn     = Math.max(0, Math.floor((Date.now() - new Date(start)) / (7 * 24 * 60 * 60 * 1000)));
+  const weeksToRace = profile.raceDate ? weeksUntil(profile.raceDate) : 99;
+  return calcDurationsForWeek(profile.fitnessLevel, weeksIn, weeksToRace);
 }
 
 function buildWeekPlan(longRunDay, totalDays, durations) {
@@ -853,27 +857,117 @@ function WorkoutHistory() {
 function PlanPage() {
   const { profile } = state;
   if (!profile?.raceDate) return div("page", div("card", p("Complete setup to see your training plan.")));
-  const weeks     = weeksUntil(profile.raceDate);
-  const phase     = currentPhase(weeks);
-  const durations = getWeeklyDurations(profile);
-  const plan      = buildWeekPlan(profile.longRunDay ?? 6, profile.trainingDays || 4, durations);
 
-  return div("page",
-    el("header", null, h1("Training Plan"), btn("← Back", () => setState({ view: "dashboard" }), "btn-back")),
-    div("card",
-      div("stat-row", statBox("Weeks Out", weeks), statBox("Phase", phase.name), statBox("Days/Week", profile.trainingDays || 4)),
-      div("phase-note", phase.note)
-    ),
-    div("card",
-      h2("This Week"),
-      plan.map(day =>
-        div(`plan-day ${day.type === "Rest" ? "rest" : "active"}`,
-          el("span", { className: "day-name" }, DNAMES[day.idx]),
-          el("span", { className: "day-type-full" }, day.type),
-          day.zone  ? el("span", { className: "day-zone-full" }, day.zone)  : null,
-          day.notes ? el("span", { className: "day-notes" }, day.notes) : null
+  const totalWeeks     = weeksUntil(profile.raceDate);
+  const phase          = currentPhase(totalWeeks);
+  const startDate      = new Date(profile.trainingStart || profile.createdAt);
+  const raceDate       = new Date(profile.raceDate + "T12:00:00");
+  const totalPlanWeeks = Math.max(1, Math.ceil((raceDate - startDate) / (7 * 24 * 60 * 60 * 1000)));
+  const currentWeekIdx = Math.max(0, Math.floor((Date.now() - startDate) / (7 * 24 * 60 * 60 * 1000)));
+
+  const statsCard = div("card",
+    div("stat-row", statBox("Plan Weeks", totalPlanWeeks), statBox("Weeks Left", totalWeeks), statBox("Phase", phase.name)),
+    div("phase-note", phase.note)
+  );
+
+  const backBtn  = btn("← Back", () => setState({ view: "dashboard" }), "btn-back");
+
+  if (!planViewMode) {
+    return div("page",
+      el("header", null, h1("Training Plan"), backBtn),
+      statsCard,
+      div("card",
+        h2("How would you like to view your plan?"),
+        p("Pick your preferred layout. You can switch anytime."),
+        div("plan-view-picker",
+          btn("📅  Full Calendar — week-by-week grid", () => { planViewMode = "calendar"; render(); }),
+          btn("📊  Progress Chart — bar chart of the whole plan", () => { planViewMode = "chart"; render(); }, "btn-secondary")
         )
       )
+    );
+  }
+
+  const switchBtn = btn(
+    planViewMode === "calendar" ? "📊 Switch to Chart" : "📅 Switch to Calendar",
+    () => { planViewMode = planViewMode === "calendar" ? "chart" : "calendar"; render(); },
+    "btn-small"
+  );
+
+  const content = planViewMode === "chart"
+    ? renderPlanChart(profile, totalPlanWeeks, currentWeekIdx)
+    : renderPlanCalendar(profile, totalPlanWeeks, currentWeekIdx);
+
+  return div("page",
+    el("header", null, h1("Training Plan"), div("header-actions", switchBtn, backBtn)),
+    statsCard,
+    content
+  );
+}
+
+function renderPlanChart(profile, totalWeeks, currentWeekIdx) {
+  const level  = FITNESS_LEVELS[profile.fitnessLevel] || FITNESS_LEVELS.novice;
+  const maxBar = level.maxLong;
+
+  const weeks = Array.from({ length: totalWeeks }, (_, w) => {
+    const dur = calcDurationsForWeek(profile.fitnessLevel, w, totalWeeks - w);
+    return { weekNum: w + 1, dur, isCurrent: w === currentWeekIdx };
+  });
+
+  return div("card",
+    h2("Full Plan — Progress Chart"),
+    p("Each bar is one week. Height = long run duration. Orange = recovery week. Blue = current week."),
+    div("chart-scroll",
+      div("chart-container",
+        weeks.map(w => {
+          const heightPct = Math.max(4, Math.round((w.dur.longMins / maxBar) * 100));
+          const barCls = w.isCurrent ? "chart-bar current-bar" : w.dur.isCutback ? "chart-bar cutback-bar" : "chart-bar";
+          return div("chart-col",
+            el("span", { className: "bar-mins" }, w.dur.longMins),
+            el("div", { className: barCls, style: { height: `${heightPct}%` } }),
+            el("span", { className: "bar-week" }, `W${w.weekNum}`)
+          );
+        })
+      )
+    )
+  );
+}
+
+function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
+  const longRunDay   = profile.longRunDay ?? 6;
+  const trainingDays = profile.trainingDays || 4;
+  const startDate    = new Date(profile.trainingStart || profile.createdAt);
+
+  const weeks = Array.from({ length: totalWeeks }, (_, w) => {
+    const dur       = calcDurationsForWeek(profile.fitnessLevel, w, totalWeeks - w);
+    const plan      = buildWeekPlan(longRunDay, trainingDays, dur);
+    const weekStart = new Date(startDate);
+    weekStart.setDate(weekStart.getDate() + w * 7);
+    return { weekNum: w + 1, plan, dur, isCurrent: w === currentWeekIdx, weekStart };
+  });
+
+  return div("card",
+    h2("Full Plan — Calendar"),
+    div("plan-calendar",
+      weeks.map(w => {
+        const dateStr = w.weekStart.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        return div(`plan-week${w.isCurrent ? " current-week" : ""}${w.dur.isCutback ? " cutback-week" : ""}`,
+          div("plan-week-header",
+            el("span", { className: "plan-week-num" }, `Week ${w.weekNum}`),
+            el("span", { className: "plan-week-date" }, dateStr),
+            w.isCurrent    ? el("span", { className: "plan-tag current-tag" }, "← Now") : null,
+            w.dur.isCutback? el("span", { className: "plan-tag cutback-tag" }, "↓ Recovery") : null
+          ),
+          div("plan-week-days",
+            w.plan.map(day => {
+              const typeCls = day.type === "Rest" ? "rest" : day.type === "Long Run" ? "long" : day.type === "Tempo Run" ? "tempo" : "easy";
+              return div(`plan-day-cell ${typeCls}`,
+                el("span", { className: "plan-cell-day" }, day.day),
+                el("span", { className: "plan-cell-type" }, day.type === "Long Run" ? `Long\n${w.dur.longMins}m` : day.type === "Tempo Run" ? "Tempo" : day.type === "Easy Run" ? "Easy" : "Rest")
+              );
+            })
+          )
+        );
+      })
     )
   );
 }
