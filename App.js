@@ -127,28 +127,28 @@ const PLAN_LEVELS = {
   scratch: {
     label: "Walk to Run — just getting started",
     desc:  "Build from walk/run intervals to running continuously. Every step counts.",
-    longStart: 3,  longPeak: 12, longIncrement: 1,
-    easyMiRange: [2, 3.5], midMiRange: [0, 0],
+    longStart: 3,  longPeak: 18,
+    easyMiRange: [2, 4], midMiRange: [0, 0],
     hasFartlek: false
   },
   firstTimer: {
     label: "First Timer — comfortable running 3–4 miles",
     desc:  "Your first marathon. We'll get you to the start line strong and the finish line proud.",
-    longStart: 6,  longPeak: 18, longIncrement: 2,
+    longStart: 6,  longPeak: 20,
     easyMiRange: [3, 5], midMiRange: [4, 7],
     hasFartlek: true
   },
   beenHereBefore: {
     label: "Been Here Before — done a race, ready to go farther",
     desc:  "You know what to do. Let's run it smarter and finish stronger.",
-    longStart: 8,  longPeak: 20, longIncrement: 2,
+    longStart: 8,  longPeak: 20,
     easyMiRange: [4, 7], midMiRange: [5, 9],
     hasFartlek: true
   },
   competitive: {
     label: "Competitive — chasing a time goal",
     desc:  "Speed work, tempo runs, and peak mileage. Racing to a PR.",
-    longStart: 10, longPeak: 22, longIncrement: 2,
+    longStart: 10, longPeak: 22,
     easyMiRange: [5, 8], midMiRange: [6, 10],
     hasFartlek: true
   }
@@ -258,18 +258,22 @@ function calcWeekData(fitnessLevel, weeksIn, weeksToRace) {
     return { longMi: roundHalf(level.longPeak * 0.75), easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], isCutback: false, phase, hasFartlek: level.hasFartlek };
   }
 
-  // 3:1 block progression
+  // 3:1 block progression with 10% rule
   const blockNum  = Math.floor(weeksIn / 4);
   const blockWeek = weeksIn % 4;
   const isCutback = blockWeek === 3;
 
+  // Build weeks elapsed (cutback weeks don't count as increases)
+  const buildWeeks = blockNum * 3 + Math.min(blockWeek, 2);
+
   let longMi;
   if (isCutback) {
-    // Cutback ~72% of where the block would have peaked
-    const blockPeak = Math.min(level.longStart + (blockNum * 3 + 2) * level.longIncrement, level.longPeak);
+    // Cutback = 72% of that block's peak (week 3 of the block)
+    const blockPeak = roundHalf(Math.min(level.longStart * Math.pow(1.10, blockNum * 3 + 2), level.longPeak));
     longMi = roundHalf(blockPeak * 0.72);
   } else {
-    longMi = Math.min(level.longStart + (blockNum * 3 + blockWeek) * level.longIncrement, level.longPeak);
+    // 10% increase per build week, capped at peak
+    longMi = roundHalf(Math.min(level.longStart * Math.pow(1.10, buildWeeks), level.longPeak));
   }
 
   // Easy and mid miles scale proportionally with long run progress

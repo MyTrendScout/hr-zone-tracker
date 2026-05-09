@@ -362,15 +362,23 @@
 
           <form class="form" id="beta-form" novalidate>
             <div class="field">
+              <label for="ra-name">Your name</label>
+              <input id="ra-name" name="name" type="text" autocomplete="name" placeholder="e.g. Sara" required />
+            </div>
+
+            <div class="field">
               <label for="email">Email</label>
-              <input
-                id="email"
-                name="email"
-                type="email"
-                autocomplete="email"
-                placeholder="you@example.com"
-                required
-              />
+              <input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required />
+            </div>
+
+            <div class="field">
+              <label for="ra-pw">Choose a password <span class="field__opt">— you'll use this to log in once approved</span></label>
+              <input id="ra-pw" name="password" type="password" autocomplete="new-password" placeholder="At least 6 characters" required />
+            </div>
+
+            <div class="field">
+              <label for="ra-pw2">Confirm password</label>
+              <input id="ra-pw2" name="password2" type="password" autocomplete="new-password" placeholder="Repeat your password" required />
             </div>
 
             <div class="field">
@@ -380,8 +388,8 @@
               <textarea
                 id="note"
                 name="note"
-                rows="5"
-                placeholder="What marathon are you training for? When is it? What's your fitness level — are you a first-timer or have you run one before? Do you have a heart rate monitor? What do you hope the app helps you with?"
+                rows="4"
+                placeholder="What marathon are you training for? When is it? First-timer or been here before? Do you have a heart rate monitor?"
                 required
               ></textarea>
             </div>
@@ -432,6 +440,9 @@
       </div>
     </footer>
 
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+    <script src="../firebase-config.js"></script>
     <script src="script.js" defer></script>
   </body>
 </html>
