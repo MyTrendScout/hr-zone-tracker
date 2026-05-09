@@ -1261,6 +1261,27 @@ async function rejectRequest(docId) {
   setState({ pendingRequests: filtered, pendingCount: filtered.length });
 }
 
+async function deleteAthlete(userId, name) {
+  if (!window.confirm(`Delete ${name}? This removes their login and all training data permanently.`)) return;
+  setState({ loading: true });
+  try {
+    // Delete data subcollection docs
+    const dataSnap = await db.collection("users").doc(userId).collection("data").get();
+    await Promise.all(dataSnap.docs.map(d => d.ref.delete()));
+    // Delete all workouts
+    const wSnap = await db.collection("users").doc(userId).collection("workouts").get();
+    await Promise.all(wSnap.docs.map(d => d.ref.delete()));
+    // Delete user doc itself
+    await db.collection("users").doc(userId).delete();
+    // Remove from approvedUsers
+    await db.collection("approvedUsers").doc(userId).delete();
+  } catch (err) {
+    setState({ loading: false, error: "Could not delete athlete: " + err.message });
+    return;
+  }
+  await loadCommandCenter();
+}
+
 function CommandCenter() {
   const { allUsers, pendingRequests } = state;
 
@@ -1313,7 +1334,8 @@ function CommandCenter() {
           u.goal ? p(`🎯 Goal: ${u.goal.targetFinish} (${u.goal.targetPace}/mi)`) : null,
           u.goal?.validation ? div(`goal-status ${u.goal.validation.status}`, u.goal.validation.msg) : null,
           wFlag     ? div("flag", `⚖️ ${wFlag}`)                       : null,
-          retestDue ? div("flag", "⏱ Field test overdue (4+ weeks)")   : null
+          retestDue ? div("flag", "⏱ Field test overdue (4+ weeks)")   : null,
+          !u.admin  ? btn("Delete athlete", () => deleteAthlete(u.userId, u.profile.name), "btn-delete") : null
         );
       })
     )
