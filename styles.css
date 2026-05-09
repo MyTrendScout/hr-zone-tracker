@@ -300,6 +300,8 @@ ol li { margin-bottom: 6px; }
 .btn-reject:hover  { background: #b71c1c; }
 .btn-delete  { background: none; color: #c62828; border: 1px solid #c62828; padding: 6px 12px; font-size: 12px; width: auto; margin-top: 10px; border-radius: 6px; }
 .btn-delete:hover  { background: #c62828; color: white; }
+.pending-email  { display: block; font-size: 12px; color: #555; margin-top: 2px; }
+.pending-source { display: inline-block; font-size: 11px; color: #fff; background: #4f6ef7; border-radius: 999px; padding: 1px 7px; margin-left: 6px; }
 
 /* ── Dashboard two-column grid ── */
 .dashboard-grid { display: flex; flex-direction: column; }
@@ -315,6 +317,12 @@ ol li { margin-bottom: 6px; }
 .today-run-instructions { font-size: 13px; color: #555; line-height: 1.5; padding: 8px 12px; background: #f5f7ff; border-radius: 8px; }
 .btn-log-today { margin-top: 4px; background: #0066ff; color: white; padding: 10px; font-size: 14px; font-weight: 700; width: 100%; border-radius: 8px; }
 .cutback-badge { display: inline-block; background: #fff3e0; color: #b64500; border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700; margin-bottom: 10px; }
+.today-complete { display: flex; flex-direction: column; gap: 8px; }
+.today-complete-header { font-size: 13px; font-weight: 700; color: #2e7d32; letter-spacing: 0.05em; }
+.today-complete-type { font-size: 1.1rem; font-weight: 700; color: #333; }
+.today-complete-stats { display: flex; flex-wrap: wrap; gap: 12px; font-size: 14px; color: #444; padding: 10px 12px; background: #f0faf2; border-radius: 8px; }
+.today-complete-notes { font-size: 13px; color: #777; font-style: italic; }
+.btn-sm { padding: 7px 14px; font-size: 13px; width: auto; margin-top: 4px; }
 
 /* ── Plan view picker ── */
 .plan-view-picker { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }

@@ -872,11 +872,29 @@ function Dashboard() {
     btn("Update Zones (Run Field Test)", () => setState({ view: "test" }), "btn-secondary")
   ) : null;
 
-  // Today's workout card — detailed instructions + log button
+  // Check if athlete already logged a workout today
+  const todayISO   = new Date().toISOString().split("T")[0];
+  const todayLog   = state.workouts.find(w => w.date === todayISO);
+
+  // Today's workout card — detailed instructions + log button, or completed results
   const todayCard = todayPlan ? div("card today-card",
     h2(`Today — ${DNAMES[todayIdx]}`),
     weekData?.isCutback ? div("cutback-badge", "Recovery Week — keep it easy") : null,
-    todayPlan.type === "Rest"
+
+    todayLog ? div("today-complete",
+      div("today-complete-header", "✓ Completed"),
+      div("today-complete-type", todayLog.type || "Run"),
+      div("today-complete-stats",
+        todayLog.distanceMi ? el("span", null, `📍 ${todayLog.distanceMi} mi`) : null,
+        todayLog.durationSec ? el("span", null, `⏱ ${secsToHMS(todayLog.durationSec)}`) : null,
+        todayLog.pace && todayLog.type === "Run" ? el("span", null, `🏃 ${todayLog.pace}/mi`) : null,
+        todayLog.avgHR  ? el("span", null, `♥ ${todayLog.avgHR} bpm`) : null
+      ),
+      todayLog.notes ? div("today-complete-notes", `"${todayLog.notes}"`) : null,
+      btn("View History", () => setState({ view: "history" }), "btn-secondary btn-sm")
+    )
+
+    : todayPlan.type === "Rest"
       ? div("today-rest", todayPlan.notes || "Rest day. Recover, hydrate, sleep well.")
       : div("today-workout",
           div("today-run-type", todayPlan.type),
@@ -1298,7 +1316,9 @@ function CommandCenter() {
         pendingRequests.map(req =>
           div("pending-request",
             div("pending-info",
-              el("strong", null, req.name),
+              el("strong", null, req.name || req.email || "Unknown"),
+              req.email && req.name !== req.email ? el("span", { className: "pending-email" }, req.email) : null,
+              req.source === "landing-page" ? el("span", { className: "pending-source" }, "via landing page") : null,
               req.note ? p(req.note) : null,
               el("span", { className: "pending-date" }, `Requested: ${new Date(req.requestedAt).toLocaleDateString()}`)
             ),
