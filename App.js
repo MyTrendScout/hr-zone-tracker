@@ -1246,26 +1246,31 @@ function FieldTest() {
 // COMMAND CENTER  (admin only)
 // ═══════════════════════════════════════════════════════════════
 async function loadCommandCenter() {
-  setState({ loading: true, view: "command" });
+  setState({ loading: true, view: "command", error: null });
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("Connection timed out.")), 10000));
   try {
-    const [approvedSnap, pendingSnap] = await Promise.all([
-      db.collection("approvedUsers").get(),
-      db.collection("signupRequests").where("status", "==", "pending").get()
+    const [approvedSnap, pendingSnap] = await Promise.race([
+      Promise.all([
+        db.collection("approvedUsers").get(),
+        db.collection("signupRequests").where("status", "==", "pending").get()
+      ]),
+      timeout
     ]);
 
     const approved = approvedSnap.docs.map(d => ({ docId: d.id, ...d.data() }));
     const pending  = pendingSnap.docs.map(d => ({ docId: d.id, ...d.data() }));
 
-    const allUsers = await Promise.all([
-      // Admin's own data
-      loadUserData(ADMIN.id).then(d => ({ ...d, name: ADMIN.name, userId: ADMIN.id, admin: true })),
-      // All approved users
-      ...approved.map(u => loadUserData(u.docId).then(d => ({ ...d, name: u.name, userId: u.docId, admin: false })))
+    const allUsers = await Promise.race([
+      Promise.all([
+        loadUserData(ADMIN.id).then(d => ({ ...d, name: ADMIN.name, userId: ADMIN.id, admin: true })),
+        ...approved.map(u => loadUserData(u.docId).then(d => ({ ...d, name: u.name, userId: u.docId, admin: false })))
+      ]),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("Timed out loading athlete data.")), 10000))
     ]);
 
     setState({ allUsers, pendingRequests: pending, pendingCount: pending.length, loading: false });
   } catch (err) {
-    setState({ loading: false, error: "Could not load command center: " + err.message });
+    setState({ loading: false, error: "Command Center: " + err.message });
   }
 }
 
@@ -1379,7 +1384,13 @@ function CommandCenter() {
     h2("Athletes"),
     div("user-cards",
       (allUsers || []).map(u => {
-        if (!u.profile) return div("user-card empty", el("em", null, `${u.name} — no profile yet`));
+        if (!u.profile) return div("user-card empty",
+          el("em", null, `${u.name} — no profile yet`),
+          !u.admin ? div("card-admin-actions",
+            btn("Change Password", () => changeAthletePassword(u.userId, u.name), "btn-secondary btn-sm"),
+            btn("Delete Athlete",  () => deleteAthlete(u.userId, u.name),         "btn-delete")
+          ) : null
+        );
         const pred    = getBestPrediction(u.workouts);
         const weights = u.workouts.filter(w => w.weightLbs).slice(0, 7).map(w => w.weightLbs);
         const wFlag   = checkWeightFlag(weights);
