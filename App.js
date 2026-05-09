@@ -183,11 +183,25 @@ function predictedPace(finishSec) {
 }
 
 function getBestPrediction(workouts) {
-  const valid = workouts.filter(w => w.distanceMi > 0.5 && w.durationSec > 0);
+  // Only use runs of 4+ miles — shorter efforts give wildly inaccurate Riegel projections
+  const valid = workouts.filter(w => w.type !== "Walk" && w.distanceMi >= 4 && w.durationSec > 0);
   if (!valid.length) return null;
-  const w = valid[0];
-  const sec = riegelPredict(w.durationSec, w.distanceMi, MARATHON_MI);
-  return { sec, timeStr: secsToHMS(sec), paceStr: predictedPace(sec) + "/mi", basedOn: w };
+  // Pick the workout that produces the fastest (lowest) predicted finish — not just the latest
+  let best = null;
+  for (const w of valid) {
+    const sec = riegelPredict(w.durationSec, w.distanceMi, MARATHON_MI);
+    if (!best || sec < best.sec) best = { sec, w };
+  }
+  const { sec, w } = best;
+  const confident = w.distanceMi >= 8; // 8+ mile runs give much more reliable estimates
+  return {
+    sec,
+    timeStr:   secsToHMS(sec),
+    paceStr:   predictedPace(sec) + "/mi",
+    distMi:    w.distanceMi,
+    date:      w.date,
+    confident
+  };
 }
 
 function validateGoal(targetPaceStr, predictedSec) {
@@ -844,10 +858,11 @@ function Dashboard() {
     ),
     div("phase-note", phase.note),
     prediction ? div("prediction-box",
-      p(el("span", { className: "pred-main" }, `📈 Predicted finish: ${prediction.timeStr} (${prediction.paceStr})`)),
+      p(el("span", { className: "pred-main" }, `📈 Fitness estimate: ${prediction.timeStr} (${prediction.paceStr})`)),
+      el("p", { className: "pred-source" }, `Based on your ${prediction.distMi}-mile run on ${prediction.date}${prediction.confident ? "" : " — accuracy improves as your long runs get longer"}`),
       goal ? p(`🎯 Your goal: ${goal.targetFinish} (${goal.targetPace}/mi)`) : null,
       goal?.validation ? div(`goal-status ${goal.validation.status}`, goal.validation.msg) : null
-    ) : p("Log a workout to see your predicted marathon finish time.")
+    ) : p("No fitness estimate yet — log a run of 4+ miles to see one.")
   ) : null;
 
   const zonesCard = zones ? div("card",
