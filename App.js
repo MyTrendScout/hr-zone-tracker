@@ -465,6 +465,7 @@ function getView() {
   if (state.loading) return div("loading", "Loading…");
   // These views are accessible without being logged in
   if (state.view === "request-access" || state.view === "request-sent") return RequestAccessPage();
+  if (state.view === "forgot-password" || state.view === "reset-sent") return ForgotPasswordPage();
   if (!state.user)   return LoginPage();
   switch (state.view) {
     case "request-access": return RequestAccessPage();
@@ -557,8 +558,17 @@ function LoginPage() {
     div("field", pwInput),
     btn("Login", doLogin),
     div("link-row",
-      btn("Request Access →", () => setState({ view: "request-access", error: null }), "btn-link")
+      btn("Request Access →",  () => setState({ view: "request-access",  error: null }), "btn-link"),
+      btn("Forgot password?",  () => setState({ view: "forgot-password", error: null }), "btn-link")
     )
+  );
+}
+
+function ForgotPasswordPage() {
+  return div("login-page",
+    pageHeader("Forgot Password", () => setState({ view: "login", error: null })),
+    p("Contact the admin to reset your password. Once they reset it, come back and log in with your new one."),
+    btn("Back to Login", () => setState({ view: "login", error: null }))
   );
 }
 
@@ -572,45 +582,41 @@ function doLogout() {
 function RequestAccessPage() {
   const submit = async () => {
     clearError();
-    const name    = (document.getElementById("ra-name")?.value || "").trim();
-    const pw      = (document.getElementById("ra-pw")?.value   || "").trim();
-    const pwConf  = (document.getElementById("ra-pw2")?.value  || "").trim();
-    const note    = (document.getElementById("ra-note")?.value || "").trim();
+    const name    = (document.getElementById("ra-name")?.value  || "").trim();
+    const email   = (document.getElementById("ra-email")?.value || "").trim();
+    const pw      = (document.getElementById("ra-pw")?.value    || "").trim();
+    const pwConf  = (document.getElementById("ra-pw2")?.value   || "").trim();
+    const note    = (document.getElementById("ra-note")?.value  || "").trim();
 
-    if (!name)        { showError("Please enter your name."); return; }
-    if (!pw)          { showError("Please choose a password."); return; }
-    if (pw.length < 6){ showError("Password must be at least 6 characters."); return; }
-    if (pw !== pwConf){ showError("Passwords don't match."); return; }
-    if (pw === ADMIN.password) { showError("That password is not available. Choose a different one."); return; }
+    if (!name)                           { showError("Please enter your name."); return; }
+    if (!email || !/.+@.+\..+/.test(email)) { showError("Please enter a valid email address."); return; }
+    if (!pw)                             { showError("Please choose a password."); return; }
+    if (pw.length < 6)                   { showError("Password must be at least 6 characters."); return; }
+    if (pw !== pwConf)                   { showError("Passwords don't match."); return; }
+    if (pw === ADMIN.password)           { showError("That password is not available. Choose a different one."); return; }
 
-    // Check not already pending
     setState({ loading: true, error: null });
     try {
       const hash = await hashPassword(pw);
-
-      // Reject if already approved with same password
       const existing = await db.collection("approvedUsers").where("passwordHash", "==", hash).get();
       if (!existing.empty) { setState({ loading: false, error: "That password is already in use. Choose a different one." }); return; }
 
       await db.collection("signupRequests").add({
-        name, passwordHash: hash, note, status: "pending",
-        requestedAt: new Date().toISOString()
+        name, email, passwordHash: hash, note, status: "pending",
+        source: "app", requestedAt: new Date().toISOString()
       });
 
-      // Fire-and-forget email to admin — don't block on it
       notifyAdmin(name, note);
-
       setState({ loading: false, view: "request-sent" });
     } catch (err) {
       setState({ loading: false, error: "Could not submit request: " + err.message });
     }
   };
 
-  // Success screen
   if (state.view === "request-sent") {
     return div("login-page",
       h1("Request Sent ✓"),
-      p("Your access request has been submitted. The admin will review it and let you know when you're approved."),
+      p("Your request has been submitted. We'll email you within 48 hours."),
       p("Once approved, come back here and log in with the password you chose."),
       btn("Back to Login", () => setState({ view: "login", error: null }))
     );
@@ -618,12 +624,13 @@ function RequestAccessPage() {
 
   return div("login-page",
     pageHeader("Request Access", () => setState({ view: "login", error: null })),
-    p("Fill in your details below. The admin will approve your request before you can log in."),
+    p("Fill in your details and we'll review your request."),
     errorBanner(),
-    field("Your Name *", input({ id: "ra-name", type: "text", placeholder: "e.g. Sara" })),
-    field("Choose a Password *", input({ id: "ra-pw", type: "password", placeholder: "At least 6 characters" })),
-    field("Confirm Password *", input({ id: "ra-pw2", type: "password", placeholder: "Repeat your password" })),
-    field("Note to admin (optional)", input({ id: "ra-note", type: "text", placeholder: "e.g. Hi John, I'm your Thursday running partner" })),
+    field("Your Name *",       input({ id: "ra-name",  type: "text",     placeholder: "e.g. Sara" })),
+    field("Email *",           input({ id: "ra-email", type: "email",    placeholder: "you@example.com" })),
+    field("Choose a Password *",   input({ id: "ra-pw",   type: "password", placeholder: "At least 6 characters" })),
+    field("Confirm Password *",    input({ id: "ra-pw2",  type: "password", placeholder: "Repeat your password" })),
+    field("Note (optional)",   input({ id: "ra-note",  type: "text",     placeholder: "e.g. Hi John, I'm your Thursday running partner" })),
     btn("Submit Request", submit)
   );
 }
@@ -1270,13 +1277,41 @@ async function approveRequest(docId, requestData) {
     approvedAt: new Date().toISOString()
   });
   await db.collection("signupRequests").doc(docId).update({ status: "approved" });
+
+  // Open pre-filled approval email if we have their address
+  if (requestData.email) {
+    const subject = encodeURIComponent("You're in — HR Zone Tracker beta access approved");
+    const body = encodeURIComponent(
+      `Hi ${requestData.name},\n\n` +
+      `Great news — your beta access to HR Zone Tracker has been approved!\n\n` +
+      `Log in here using the password you chose:\n` +
+      `https://mytrendscout.github.io/hr-zone-tracker/\n\n` +
+      `Once you're in, complete your profile and we'll build your training plan.\n\n` +
+      `Welcome to the team!\nJohn`
+    );
+    window.open(`mailto:${requestData.email}?subject=${subject}&body=${body}`);
+  }
+
   await loadCommandCenter();
 }
 
 async function rejectRequest(docId) {
+  const req = state.pendingRequests.find(r => r.docId === docId);
   await db.collection("signupRequests").doc(docId).update({ status: "rejected" });
   const filtered = state.pendingRequests.filter(r => r.docId !== docId);
   setState({ pendingRequests: filtered, pendingCount: filtered.length });
+
+  // Open pre-filled rejection email if we have their address
+  if (req?.email) {
+    const subject = encodeURIComponent("HR Zone Tracker — beta request update");
+    const body = encodeURIComponent(
+      `Hi ${req.name},\n\n` +
+      `Thanks for your interest in HR Zone Tracker.\n\n` +
+      `We're not able to add you to the beta right now, but we'll keep your info on file and reach out when a spot opens up.\n\n` +
+      `John`
+    );
+    window.open(`mailto:${req.email}?subject=${subject}&body=${body}`);
+  }
 }
 
 async function deleteAthlete(userId, name) {
@@ -1298,6 +1333,15 @@ async function deleteAthlete(userId, name) {
     return;
   }
   await loadCommandCenter();
+}
+
+async function changeAthletePassword(userId, name) {
+  const newPw = window.prompt(`Enter a new password for ${name} (min 6 characters):`);
+  if (!newPw) return;
+  if (newPw.length < 6) { alert("Password must be at least 6 characters."); return; }
+  const hash = await hashPassword(newPw);
+  await db.collection("approvedUsers").doc(userId).update({ passwordHash: hash });
+  alert(`Password updated for ${name}. Let them know their new password.`);
 }
 
 function CommandCenter() {
@@ -1355,7 +1399,10 @@ function CommandCenter() {
           u.goal?.validation ? div(`goal-status ${u.goal.validation.status}`, u.goal.validation.msg) : null,
           wFlag     ? div("flag", `⚖️ ${wFlag}`)                       : null,
           retestDue ? div("flag", "⏱ Field test overdue (4+ weeks)")   : null,
-          !u.admin  ? btn("Delete athlete", () => deleteAthlete(u.userId, u.profile.name), "btn-delete") : null
+          !u.admin ? div("card-admin-actions",
+            btn("Change Password", () => changeAthletePassword(u.userId, u.profile.name), "btn-secondary btn-sm"),
+            btn("Delete Athlete",  () => deleteAthlete(u.userId, u.profile.name),         "btn-delete")
+          ) : null
         );
       })
     )

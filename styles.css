@@ -298,10 +298,12 @@ ol li { margin-bottom: 6px; }
 .btn-approve:hover { background: #1b5e20; }
 .btn-reject  { background: #c62828; color: white; padding: 8px 12px; font-size: 13px; width: auto; margin: 0; border-radius: 6px; }
 .btn-reject:hover  { background: #b71c1c; }
-.btn-delete  { background: none; color: #c62828; border: 1px solid #c62828; padding: 6px 12px; font-size: 12px; width: auto; margin-top: 10px; border-radius: 6px; }
+.btn-delete  { background: none; color: #c62828; border: 1px solid #c62828; padding: 6px 12px; font-size: 12px; width: auto; border-radius: 6px; }
 .btn-delete:hover  { background: #c62828; color: white; }
+.card-admin-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .pending-email  { display: block; font-size: 12px; color: #555; margin-top: 2px; }
 .pending-source { display: inline-block; font-size: 11px; color: #fff; background: #4f6ef7; border-radius: 999px; padding: 1px 7px; margin-left: 6px; }
+.pending-no-pw  { font-size: 12px; color: #b64500; font-style: italic; }
 
 /* ── Dashboard two-column grid ── */
 .dashboard-grid { display: flex; flex-direction: column; }
