@@ -355,6 +355,7 @@ ol li { margin-bottom: 6px; }
 .plan-day-cell.rest    { background: #efefef; }
 .plan-day-cell.easy    { background: #c8e6c9; }
 .plan-day-cell.fartlek { background: #ffe0b2; }
+.plan-day-cell.quality { background: #ffccbc; color: #bf360c; }
 .plan-day-cell.cross   { background: #e1bee7; }
 .plan-day-cell.long    { background: #1565C0; color: white; }
 

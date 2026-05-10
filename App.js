@@ -241,6 +241,22 @@ function getPhase(weeksToRace) {
 function lerp(a, b, t) { return a + (b - a) * Math.min(1, Math.max(0, t)); }
 function roundHalf(n)  { return Math.round(n * 2) / 2; }
 
+// Mid-to-3/4 target band for a given zone
+function zoneTargetBpm(zone) {
+  if (!zone) return null;
+  const mid  = Math.round(zone.lo + (zone.hi - zone.lo) * 0.50);
+  const high = Math.round(zone.lo + (zone.hi - zone.lo) * 0.75);
+  return { mid, high, label: `${mid}–${high} bpm` };
+}
+
+// Yasso 800 pace: "3:55:58" → "3:55" (hours become minutes, minutes become seconds)
+function yassoTime(goalFinishStr) {
+  if (!goalFinishStr) return null;
+  const parts = goalFinishStr.split(":").map(Number);
+  if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) return null;
+  return `${parts[0]}:${String(parts[1]).padStart(2, "0")}`;
+}
+
 function calcWeekData(fitnessLevel, weeksIn, weeksToRace) {
   const key   = normalizeFitnessLevel(fitnessLevel);
   const level = PLAN_LEVELS[key] || PLAN_LEVELS.firstTimer;
@@ -248,14 +264,14 @@ function calcWeekData(fitnessLevel, weeksIn, weeksToRace) {
 
   // Race week: gentle shakeout
   if (weeksToRace <= 1) {
-    return { longMi: 3, easyMi: 2, midMi: 0, isCutback: false, phase, hasFartlek: false };
+    return { longMi: 3, easyMi: 2, midMi: 0, isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
   // Taper
   if (weeksToRace === 2) {
-    return { longMi: roundHalf(level.longPeak * 0.55), easyMi: level.easyMiRange[0], midMi: 0, isCutback: false, phase, hasFartlek: false };
+    return { longMi: roundHalf(level.longPeak * 0.55), easyMi: level.easyMiRange[0], midMi: 0, isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
   if (weeksToRace === 3) {
-    return { longMi: roundHalf(level.longPeak * 0.75), easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], isCutback: false, phase, hasFartlek: level.hasFartlek };
+    return { longMi: roundHalf(level.longPeak * 0.75), easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], isCutback: false, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
   }
 
   // 3:1 block progression with 10% rule
@@ -281,7 +297,7 @@ function calcWeekData(fitnessLevel, weeksIn, weeksToRace) {
   const easyMi = roundHalf(lerp(level.easyMiRange[0], level.easyMiRange[1], progressRatio));
   const midMi  = roundHalf(lerp(level.midMiRange[0],  level.midMiRange[1],  progressRatio));
 
-  return { longMi, easyMi, midMi, isCutback, phase, hasFartlek: level.hasFartlek };
+  return { longMi, easyMi, midMi, isCutback, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
 }
 
 function getCurrentWeekData(profile) {
@@ -291,88 +307,300 @@ function getCurrentWeekData(profile) {
   return calcWeekData(profile.fitnessLevel, weeksIn, weeksToRace);
 }
 
-const RECOVERY_SUGGESTIONS = [
-  "Gentle yoga or stretching — 15–20 min.",
-  "Easy walk — 20–30 min. Let the legs breathe.",
-  "Foam roll and stretch. Calves, quads, and hips.",
-  "Complete rest, or a slow 20-min walk.",
-  "Easy yoga or light swim. Keep HR in Z1.",
-  "Full rest. Relax and let your body absorb the training.",
-  "Easy walk or stretching. Stay light on your feet."
-];
+// ─────────────────────────────────────────────────────────────
+// Long run notes — always slow and steady, never race pace finish
+// ─────────────────────────────────────────────────────────────
+function buildLongRunNotes(phaseName, longMi, isCutback, z1, z2) {
+  const z1str = z1 ? ` (target ${z1.label})` : " (Zone 1)";
+  const z2str = z2 ? ` (target ${z2.label})` : " (Zone 2)";
+  if (phaseName === "Race Week") {
+    return `Short shakeout — 3 mi max. Easy, easy, easy${z1str}. Just wake up the legs. No need to prove anything today.`;
+  }
+  if (phaseName === "Taper") {
+    return `${longMi} mi — your last long run before race day. Start slow, stay slow${z1str}. Finish feeling like you could have done more. Do NOT pick up the pace at the end — save it.`;
+  }
+  if (isCutback) {
+    return `${longMi} mi — recovery week long run. Back off the effort. Stay in Z1${z1str} the whole time. Your body is consolidating 3 weeks of training. Run relaxed and enjoy the easier day.`;
+  }
+  return `${longMi} mi long run. Start in Z1${z1str}, settle into Z2${z2str} by mile 2–3, and hold there. If HR drifts above Z2, slow down or walk briefly. Finish at the same pace you started — never pick it up at the end. Why: the long run builds your aerobic engine and fat-burning capacity. Slow IS the workout.`;
+}
 
-function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData) {
-  const { longMi, easyMi, isCutback, hasFartlek } = weekData;
+// ─────────────────────────────────────────────────────────────
+// Phase × Level quality workout matrix
+//
+// Quality tier cap by training days:
+//   3 days → "fartlek"  (Fartlek/Base only — long run IS the hard day)
+//   4 days → "tempo"    (Tempo / Race Pace OK, Yasso 800s held back)
+//   5 days → "full"     (complete progression, Yasso unlocked)
+// ─────────────────────────────────────────────────────────────
+function getQualityWorkout(phaseName, levelKey, weekData, zones, goal, weeksToRace, trainingDays) {
+  const { easyMi, midMi, isCutback } = weekData;
+  const z1 = zones?.z1 ? zoneTargetBpm(zones.z1) : null;
+  const z2 = zones?.z2 ? zoneTargetBpm(zones.z2) : null;
+  const z3 = zones?.z3 ? zoneTargetBpm(zones.z3) : null;
+  const z1str = z1 ? ` (target ${z1.label})` : " (Zone 1)";
+  const z2str = z2 ? ` (target ${z2.label})` : " (Zone 2)";
+  const z3str = z3 ? ` (target ${z3.label})` : " (Zone 3)";
+  const qMi = Math.max(easyMi, midMi || easyMi);
   const days = trainingDays || 4;
+  // capFartlek = 3-day runners: only easy/fartlek-level work (long run is the hard effort)
+  // capTempo   = 4-day runners: tempo and race pace OK, Yasso 800s held back
+  const capFartlek = days <= 3;
+  const capTempo   = days === 4;
 
-  // All days start as rest with active recovery tips
+  // Race Week — easy shakeout only
+  if (phaseName === "Race Week") {
+    return {
+      type: "Easy Shakeout", zone: "Z1",
+      notes: `10–15 min easy jog${z1str}. Shake out the legs. No effort, no watch, no pressure. This is not a workout.`,
+      duration: "10–15 min", miles: 2
+    };
+  }
+
+  // Taper — stay sharp without digging a hole
+  if (phaseName === "Taper") {
+    if (levelKey === "scratch" || capFartlek) {
+      return {
+        type: "Base Run", zone: "Z1–Z2",
+        notes: `Easy run${z2str}. You've done the work — this week is about staying loose and rested, not adding fitness. Keep it short and comfortable.${capFartlek && levelKey !== "scratch" ? " Running 3 days a week, your long run is already your hardest stimulus — taper week is pure rest and shake-out." : ""}`,
+        duration: `${easyMi} mi`, miles: easyMi
+      };
+    }
+    const yassoStr = goal?.targetFinish ? yassoTime(goal.targetFinish) : null;
+    // Yasso in taper only for 5-day runners at beenHereBefore/competitive level
+    if (!capTempo && yassoStr && (levelKey === "beenHereBefore" || levelKey === "competitive")) {
+      const reps = isCutback ? 3 : 4;
+      return {
+        type: "Yasso 800s", zone: "Z3",
+        notes: `${reps}×800m at ${yassoStr} per rep${z3str}. Warm up 1 mi easy${z1str}, then ${reps} × 800m at pace, equal-time jog recovery between. Cool down 1 mi. Only ${reps} reps — stay sharp, not building fitness. Why: a small dose of race pace keeps your neuromuscular system primed for race day.`,
+        duration: `${(2 + reps * 0.5).toFixed(1)} mi total`, miles: 2 + reps * 0.5
+      };
+    }
+    return {
+      type: "Strides", zone: "Z2–Z3",
+      notes: `After 15–20 min easy${z2str}, do 4–6 strides: 20-second smooth accelerations to comfortably fast, walk back between each. Not sprints — controlled and fluid. Why: strides wake up your fast-twitch fibers and keep your legs snappy without the fatigue of a real workout.`,
+      duration: `${easyMi} mi`, miles: easyMi
+    };
+  }
+
+  // Peak — highest quality work
+  if (phaseName === "Peak") {
+    // 3-day runners: long run is the peak stimulus — quality stays controlled
+    if (capFartlek) {
+      const surges = isCutback ? 4 : 6;
+      return {
+        type: "Structured Fartlek", zone: "Z2–Z3",
+        notes: `Warm up 1 mi easy${z1str}, then ${surges}×1 min at a comfortably hard effort${z3str} with 90 sec easy recovery. Cool down 1 mi. Why: training 3 days a week, your long run is already your hardest session — these short surges sharpen speed without digging a hole you can't climb out of before race day.`,
+        duration: `${easyMi} mi`, miles: easyMi
+      };
+    }
+    if (levelKey === "scratch") {
+      return {
+        type: "Structured Fartlek", zone: "Z2–Z3",
+        notes: `Warm up 1 mi easy${z1str}, then 6×1 min at a comfortably hard effort${z3str} with 90 sec easy jog recovery. Cool down 1 mi. Never force it — if it hurts, back off. Why: surges teach your body to handle bursts of effort and return to easy pace — essential for hills and race-day adrenaline.`,
+        duration: `${qMi} mi`, miles: qMi
+      };
+    }
+    // 4-day cap: Tempo Run instead of Yasso (good volume, less neuromuscular fatigue risk)
+    if (capTempo) {
+      return {
+        type: "Tempo Run", zone: "Z3",
+        notes: `Warm up 1 mi easy${z2str}, then ${Math.max(2, qMi - 2)} mi at comfortably hard${z3str} — 3-word sentences max. Cool down 1 mi easy. Why: at 4 training days, tempo work builds your lactate threshold without the recovery demand that Yasso 800s require. You get race-readiness with less risk.`,
+        duration: `${qMi} mi`, miles: qMi
+      };
+    }
+    if (levelKey === "firstTimer") {
+      return {
+        type: "Tempo Run", zone: "Z3",
+        notes: `Warm up 1 mi easy${z2str}, then ${Math.max(2, qMi - 2)} mi at comfortably hard${z3str} — breathing heavy but not gasping, 3-word sentences max. Cool down 1 mi easy. Why: tempo runs raise your lactate threshold — the pace where your body stops clearing acid as fast as it produces it. Higher threshold = stronger marathon finish.`,
+        duration: `${qMi} mi`, miles: qMi
+      };
+    }
+    // 5-day beenHereBefore and competitive — full Yasso 800s, ramping 6→10 reps
+    const yassoStr = goal?.targetFinish ? yassoTime(goal.targetFinish) : null;
+    const peakWeeksIn = Math.max(0, 7 - Math.min(7, weeksToRace)); // 0 at start of peak, grows
+    const reps = isCutback ? 4 : Math.min(10, 6 + peakWeeksIn);
+    if (yassoStr) {
+      return {
+        type: "Yasso 800s", zone: "Z3",
+        notes: `${reps}×800m at ${yassoStr} per rep${z3str}. Warm up 1 mi easy${z1str}, run each 800m at goal pace (hrs→min, min→sec), recover with equal-time jog. Cool down 1 mi. ${reps < 10 ? `Build toward 10 reps over the peak phase.` : `10 reps — you are race-ready.`} Why: Yasso 800s are the gold standard for marathon readiness. 10 reps at your goal time means you can run that race.`,
+        duration: `${(2 + reps * 0.5).toFixed(1)} mi total`, miles: 2 + reps * 0.5
+      };
+    }
+    return {
+      type: "Tempo Run", zone: "Z3",
+      notes: `Warm up 1 mi easy, then ${Math.max(2, qMi - 2)} mi comfortably hard${z3str}. Cool down 1 mi. Add a goal time in your profile to unlock Yasso 800s — the most race-specific workout in marathon training.`,
+      duration: `${qMi} mi`, miles: qMi
+    };
+  }
+
+  // Build — introducing quality, level-dependent
+  if (phaseName === "Build") {
+    // 3-day runners: keep quality at unstructured fartlek regardless of level
+    if (capFartlek) {
+      const surges = isCutback ? 3 : 5;
+      return {
+        type: "Fartlek", zone: "Z2–Z3",
+        notes: `Easy warm up 1 mi${z2str}. Then ${surges}×30–60 sec surges${z3str} — go faster when you feel like it, recover fully between each. Cool down easy. Why: at 3 training days, unstructured speed play gives your aerobic system a boost without the structural fatigue that tempo or interval sessions create. Your long run is already doing the heavy lifting.`,
+        duration: `${easyMi} mi`, miles: easyMi
+      };
+    }
+    if (levelKey === "scratch") {
+      return {
+        type: "Structured Fartlek", zone: "Z2–Z3",
+        notes: `After 5 min easy warm-up${z1str}, run 4×1 min at a slightly faster effort${z2str}–${z3str} with 2 min easy jog between. Cool down easy. Never push to the point of gasping. Why: small doses of faster running teach your heart to work at higher loads safely.`,
+        duration: `${easyMi} mi`, miles: easyMi
+      };
+    }
+    if (levelKey === "firstTimer") {
+      return {
+        type: "Structured Fartlek", zone: "Z2–Z3",
+        notes: `Warm up 1 mi easy${z1str}, then 6–8×1 min at a strong controlled effort${z3str}, recovering 90 sec easy${z1str} between. Cool down 1 mi. Hard enough to breathe heavy, not hard enough to sprint. Why: timed intervals introduce speed with structure — your body learns to handle intensity without the pressure of race-pace specificity yet.`,
+        duration: `${qMi} mi`, miles: qMi
+      };
+    }
+    if (levelKey === "beenHereBefore") {
+      return {
+        type: "Tempo Run", zone: "Z3",
+        notes: `Warm up 1 mi easy${z2str}, then ${Math.max(2, qMi - 2)} mi at comfortably hard${z3str} — conversation is 3-word sentences. Cool down 1 mi easy. Why: tempo pace trains your lactate threshold — the key to a strong marathon finish. The more miles you log in this zone, the later in the race it stays manageable.`,
+        duration: `${qMi} mi`, miles: qMi
+      };
+    }
+    // competitive — Race Pace if goal set, Tempo otherwise
+    // 4-day cap already cleared above; 5-day gets full Race Pace
+    if (goal?.targetPace) {
+      return {
+        type: "Race Pace Run", zone: "Z3",
+        notes: `Warm up 1 mi easy${z2str}, then ${Math.max(2, qMi - 2)} mi at goal marathon pace (${goal.targetPace}/mi)${z3str}. Cool down 1 mi easy. If race pace feels easy — good, that's the goal. If it feels hard — you need more base. Why: marathon pace must feel automatic by race day. This is how you ingrain it.`,
+        duration: `${qMi} mi`, miles: qMi
+      };
+    }
+    return {
+      type: "Tempo Run", zone: "Z3",
+      notes: `Warm up 1 mi easy, then ${Math.max(2, qMi - 2)} mi comfortably hard${z3str}. Cool down 1 mi. Add a goal time in your profile to get specific race-pace targets.`,
+      duration: `${qMi} mi`, miles: qMi
+    };
+  }
+
+  // Base — unstructured speed play, no pressure
+  if (phaseName === "Base") {
+    if (levelKey === "scratch") {
+      return {
+        type: "Base Run", zone: "Z1–Z2",
+        notes: `Easy run the whole way${z2str}. Walk if you need to. This is your quality slot but right now quality means consistent easy effort. Why: in base phase, every run is about building your aerobic foundation — not speed. The engine comes before the throttle.`,
+        duration: `${easyMi} mi`, miles: easyMi
+      };
+    }
+    const surges = isCutback ? 4 : 6;
+    return {
+      type: "Fartlek", zone: "Z2–Z3",
+      notes: `Warm up 1 mi easy${z2str}. Then ${surges}×30–60 sec surges — go faster when you feel like it, for however long feels natural. Recover fully back to Z1${z1str} between. Cool down easy. Why: unstructured surges introduce speed play without rigid pressure. Your fast-twitch fibers get stimulated without digging an aerobic hole.`,
+      duration: `${easyMi} mi`, miles: easyMi
+    };
+  }
+
+  // Foundation — habit-building, almost no intensity
+  if (levelKey === "scratch") {
+    return {
+      type: "Base Run", zone: "Z1",
+      notes: `Easy, easy, easy${z1str}. Walk breaks are not just allowed — they're encouraged. You're building the habit right now. Why: your body is adapting to the mechanical stress of running in these first weeks. Slow easy runs build impact resistance that prevents injury for the whole season.`,
+      duration: `${easyMi} mi`, miles: easyMi
+    };
+  }
+  return {
+    type: "Light Fartlek", zone: "Z1–Z2",
+    notes: `Easy run with 3–4 natural surges${z2str} — go faster when you feel good, back off when you don't. No timer, no pressure, just play. Why: foundation phase introduces variety without the stress of structured training. Running should feel like something you want to do.`,
+    duration: `${easyMi} mi`, miles: easyMi
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Weekly plan builder — fixed-offset stacking (no consecutive rest days)
+//
+// Offsets from longRunDay:
+//   +0  Long Run      (your chosen day)
+//   +1  Cross-Train   (active recovery after long run)
+//   +2  Rest          (still absorbing long run)
+//   +3  Quality Run   (hard day — furthest from long run)
+//   +4  Base Run      (if trainingDays >= 4)
+//   +5  Base Run      (if trainingDays >= 5) else Rest
+//   +6  Rest          (protect the long run — sleep, prep, hydrate)
+// ─────────────────────────────────────────────────────────────
+function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) {
+  const { longMi, easyMi, isCutback, phase, levelKey, weeksToRace } = weekData;
+  const days      = trainingDays || 4;
+  const phaseName = phase?.name || "Foundation";
+
+  const z1 = zones?.z1 ? zoneTargetBpm(zones.z1) : null;
+  const z2 = zones?.z2 ? zoneTargetBpm(zones.z2) : null;
+  const z1str = z1 ? ` (target ${z1.label})` : " (Zone 1)";
+  const z2str = z2 ? ` (target ${z2.label})` : " (Zone 2)";
+
+  const slot = (offset) => (longRunDay + offset) % 7;
+
+  // Base array — all rest
   const plan = DAYS.map((d, i) => ({
     idx: i, day: d, type: "Rest", zone: null,
-    notes: RECOVERY_SUGGESTIONS[i % RECOVERY_SUGGESTIONS.length],
+    notes: "Full rest or a gentle 20-min walk. Recovery is where adaptation happens — this day is as important as any run.",
     duration: "", miles: 0
   }));
 
-  const placed = new Set();
-
-  // 1. Long Run — user's chosen day
-  plan[longRunDay] = {
-    idx: longRunDay, day: DAYS[longRunDay], type: "Long Run", zone: "Base (Z2)",
-    notes: `Stay in Zone 2 the whole run. Walk if HR climbs into Z3.${isCutback ? " Recovery week — run relaxed and enjoy it." : ""}`,
+  // +0 Long Run
+  plan[slot(0)] = {
+    idx: slot(0), day: DAYS[slot(0)], type: "Long Run", zone: isCutback ? "Z1" : "Z1→Z2",
+    notes: buildLongRunNotes(phaseName, longMi, isCutback, z1, z2),
     duration: `${longMi} mi`, miles: longMi
   };
-  placed.add(longRunDay);
 
-  // 2. Full rest day BEFORE the long run
-  const restBefore = (longRunDay + 6) % 7;
-  plan[restBefore] = {
-    idx: restBefore, day: DAYS[restBefore], type: "Rest", zone: null,
-    notes: "Full rest. Hydrate, prep your gear, and sleep well before your long run.",
-    duration: "", miles: 0
-  };
-  placed.add(restBefore);
-
-  // 3. Cross-training day AFTER the long run
-  const crossDay = (longRunDay + 1) % 7;
-  plan[crossDay] = {
-    idx: crossDay, day: DAYS[crossDay], type: "Cross-Train", zone: "Z1",
-    notes: "Easy bike, swim, yoga, or walk. Move your legs without pounding. No running today — your body is still absorbing yesterday.",
+  // +1 Cross-Train
+  plan[slot(1)] = {
+    idx: slot(1), day: DAYS[slot(1)], type: "Cross-Train", zone: "Z1",
+    notes: `Easy bike, swim, yoga, or walk${z1str}. Move without pounding — your legs are still recovering from yesterday's long run. 30–45 min is plenty. Why: active recovery flushes soreness and drives blood to repair muscle without adding impact stress.`,
     duration: "30–45 min", miles: 0
   };
-  placed.add(crossDay);
 
-  // 4. Collect available days (offset 2–5 from longRunDay; restBefore at offset 6 already placed)
-  const available = [];
-  for (let offset = 2; offset <= 6; offset++) {
-    const d = (longRunDay + offset) % 7;
-    if (!placed.has(d)) available.push(d);
-  }
-  // available is ordered by increasing distance from longRunDay
-  // Middle of array = most distant slot from longRunDay
+  // +2 Rest
+  plan[slot(2)] = {
+    idx: slot(2), day: DAYS[slot(2)], type: "Rest", zone: null,
+    notes: "Rest day. You ran long two days ago and still absorbing it. Sleep, eat well, and hydrate. Foam roll if you have time.",
+    duration: "", miles: 0
+  };
 
-  // 5. Fartlek — most distant available day (speed play on the "opposite" of the week)
-  if (hasFartlek && days >= 3) {
-    const fartlekDay = available[Math.floor(available.length / 2)];
-    plan[fartlekDay] = {
-      idx: fartlekDay, day: DAYS[fartlekDay], type: "Fartlek", zone: "Mixed (Z2–Z3)",
-      notes: "Speed play! Warm up 1 mi easy, then surge for 30–90 sec whenever you feel like it. Recover between surges. Run by feel — fun and unstructured.",
+  // +3 Quality Run (intensity scales with training days)
+  const quality = getQualityWorkout(phaseName, levelKey || "firstTimer", weekData, zones, goal, weeksToRace ?? 99, days);
+  plan[slot(3)] = { idx: slot(3), day: DAYS[slot(3)], ...quality };
+
+  // +4 and +5 slots — placement depends on training days to avoid consecutive rest days:
+  //   5-day: +4=Base, +5=Base  → rests only at +2 and +6 (no consecutive)
+  //   4-day: +4=Rest, +5=Base  → rests at +2, +4, +6 (every other — no consecutive)
+  //   3-day: +4=Rest, +5=Rest  → rests at +2,+4,+5,+6 (unavoidable pair at +5/+6)
+  if (days >= 5) {
+    plan[slot(4)] = {
+      idx: slot(4), day: DAYS[slot(4)], type: "Base Run", zone: "Z1–Z2",
+      notes: `Easy aerobic run${z2str}. Comfortable conversational pace from start to finish. If you're tired from yesterday's quality work, add a 5-min walk warm-up and cut it short. Why: consistent easy mileage is the foundation of all marathon fitness.`,
       duration: `${easyMi} mi`, miles: easyMi
     };
-    placed.add(fartlekDay);
-    available.splice(available.indexOf(fartlekDay), 1);
-  }
-
-  // 6. Easy runs fill remaining run-day slots
-  let runSlotsLeft = days - 1 - (hasFartlek && days >= 3 ? 1 : 0);
-  for (const d of available) {
-    if (runSlotsLeft <= 0) break;
-    plan[d] = {
-      idx: d, day: DAYS[d], type: "Easy Run", zone: "Recovery (Z1)",
-      notes: "Conversational pace only — full sentences the whole time. If HR creeps into Z3, slow down or walk.",
+    plan[slot(5)] = {
+      idx: slot(5), day: DAYS[slot(5)], type: "Base Run", zone: "Z1–Z2",
+      notes: `Second easy run of the week${z2str}. Shorter is fine — even 3 easy miles counts. Run by feel. Why: two easy runs mid-week layer aerobic stimulus without fatigue that would compromise your long run.`,
       duration: `${easyMi} mi`, miles: easyMi
     };
-    placed.add(d);
-    runSlotsLeft--;
+  } else if (days >= 4) {
+    // +4 = Rest (spreads rest days evenly: +2, +4, +6), +5 = Base Run
+    plan[slot(5)] = {
+      idx: slot(5), day: DAYS[slot(5)], type: "Base Run", zone: "Z1–Z2",
+      notes: `Easy aerobic run${z2str}. Comfortable conversational pace from start to finish. Cut it short if needed — the goal is consistency, not heroics. Why: one solid easy run mid-week keeps your aerobic engine humming between quality and long run days.`,
+      duration: `${easyMi} mi`, miles: easyMi
+    };
+    // slot(4) stays as Rest (default) — rests now land at +2, +4, +6 with no two in a row
   }
+
+  // +6 Rest before long run
+  plan[slot(6)] = {
+    idx: slot(6), day: DAYS[slot(6)], type: "Rest", zone: null,
+    notes: "Rest day before your long run. Stay off your feet as much as you can. Lay out your gear, plan your route, hydrate throughout the day, and get to bed early.",
+    duration: "", miles: 0
+  };
 
   return plan;
 }
@@ -852,7 +1080,7 @@ function Dashboard() {
   const weekData      = profile ? getCurrentWeekData(profile) : null;
   const phase         = weeks != null ? weekData?.phase || getPhase(weeks) : null;
   const plan          = (profile?.raceDate && profile?.longRunDay != null && weekData)
-    ? buildFlexibleWeekPlan(profile.longRunDay, profile.trainingDays || 4, weekData) : null;
+    ? buildFlexibleWeekPlan(profile.longRunDay, profile.trainingDays || 4, weekData, zones, goal) : null;
   const recentWeights = workouts.filter(w => w.weightLbs).slice(0, 7).map(w => w.weightLbs);
   const weightWarning = checkWeightFlag(recentWeights);
   const retestDue     = zones?.lastTested && daysSince(zones.lastTested) > 28;
@@ -1168,7 +1396,7 @@ function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
 
   const weeks = Array.from({ length: totalWeeks }, (_, w) => {
     const wd      = calcWeekData(profile.fitnessLevel, w, totalWeeks - w);
-    const plan    = buildFlexibleWeekPlan(longRunDay, trainingDays, wd);
+    const plan    = buildFlexibleWeekPlan(longRunDay, trainingDays, wd, state.zones, state.goal);
     const weekStart = new Date(startDate);
     weekStart.setDate(weekStart.getDate() + w * 7);
     return { weekNum: w + 1, plan, wd, isCurrent: w === currentWeekIdx, weekStart };
@@ -1191,15 +1419,27 @@ function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
           div("plan-week-days",
             w.plan.map(day => {
               const typeCls =
-                day.type === "Long Run"    ? "long"    :
-                day.type === "Fartlek"     ? "fartlek" :
-                day.type === "Cross-Train" ? "cross"   :
-                day.type === "Easy Run"    ? "easy"    : "rest";
+                day.type === "Long Run"           ? "long"    :
+                day.type === "Cross-Train"        ? "cross"   :
+                day.type === "Rest"               ? "rest"    :
+                ["Fartlek","Light Fartlek","Structured Fartlek","Strides"].includes(day.type) ? "fartlek" :
+                ["Tempo Run","Race Pace Run","Yasso 800s","Easy Shakeout"].includes(day.type)  ? "quality" :
+                "easy";
+              const shortMi = day.miles ? ` ${day.miles} mi` : "";
               const cellLabel =
-                day.type === "Long Run"    ? `Long\n${w.wd.longMi} mi`  :
-                day.type === "Fartlek"     ? `Speed\n${w.wd.easyMi} mi` :
-                day.type === "Cross-Train" ? "X-Train"                  :
-                day.type === "Easy Run"    ? `Easy\n${w.wd.easyMi} mi`  : "Rest";
+                day.type === "Long Run"        ? `Long\n${w.wd.longMi} mi` :
+                day.type === "Cross-Train"     ? "X-Train"                 :
+                day.type === "Rest"            ? "Rest"                    :
+                day.type === "Base Run"        ? `Base${shortMi}`          :
+                day.type === "Fartlek"         ? `Fartlek${shortMi}`       :
+                day.type === "Light Fartlek"   ? `Fartlek${shortMi}`       :
+                day.type === "Structured Fartlek" ? `Intervals${shortMi}`  :
+                day.type === "Tempo Run"       ? `Tempo${shortMi}`         :
+                day.type === "Race Pace Run"   ? `Race Pace${shortMi}`     :
+                day.type === "Yasso 800s"      ? `Yasso 800s`              :
+                day.type === "Easy Shakeout"   ? `Shakeout`                :
+                day.type === "Strides"         ? `Strides`                 :
+                day.type;
               return div(`plan-day-cell ${typeCls}`,
                 el("span", { className: "plan-cell-day" }, day.day),
                 el("span", { className: "plan-cell-type" }, cellLabel)
