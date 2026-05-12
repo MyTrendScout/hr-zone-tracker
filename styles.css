@@ -381,6 +381,150 @@ ol li { margin-bottom: 6px; }
   }
 }
 
+/* ── Edit workout button ── */
+.btn-edit-workout {
+  background: none;
+  color: #0066ff;
+  border: 1px solid #0066ff;
+  padding: 3px 10px;
+  font-size: 12px;
+  width: auto;
+  margin: 0;
+  border-radius: 6px;
+}
+
+/* ── Mood picker ── */
+.mood-picker-wrap { margin-bottom: 14px; }
+.mood-picker-label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 8px; }
+.mood-picker { display: flex; gap: 8px; flex-wrap: wrap; }
+.mood-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 2px solid #e0e0e0;
+  border-radius: 10px;
+  cursor: pointer;
+  background: #fafafa;
+  min-width: 60px;
+  transition: border-color 0.15s, background 0.15s;
+  user-select: none;
+}
+.mood-btn:hover { border-color: #aaa; background: #f0f0f0; }
+.mood-btn.selected { border-color: #0066ff; background: #eef2ff; }
+.mood-emoji { font-size: 1.6rem; line-height: 1; }
+.mood-label { font-size: 11px; font-weight: 600; color: #555; }
+.mood-btn.selected .mood-label { color: #0066ff; }
+
+/* ── Mood tag on workout history ── */
+.workout-mood { margin-top: 6px; }
+.mood-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f0f0f0;
+  color: #444;
+}
+.mood-changed-flag { font-size: 11px; color: #b64500; margin-left: 8px; font-style: italic; }
+
+/* ── Group card (dashboard) ── */
+.group-card { border-left: 4px solid #7c3aed; }
+.group-members { display: flex; flex-direction: column; gap: 14px; margin-top: 10px; }
+.group-member { padding: 10px 12px; background: #faf5ff; border-radius: 8px; }
+.group-member-name { display: block; font-size: 14px; margin-bottom: 6px; color: #333; }
+.group-workout-rows { display: flex; flex-direction: column; gap: 4px; }
+.group-workout-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #555;
+  padding: 4px 0;
+  border-bottom: 1px solid #ede9fe;
+}
+.group-workout-row:last-child { border-bottom: none; }
+.gw-date { color: #888; min-width: 72px; }
+.gw-type { font-weight: 600; color: #7c3aed; }
+.gw-dist { color: #333; }
+.gw-dur  { color: #555; }
+.gw-mood { font-size: 14px; }
+
+/* ── Admin workout list (Command Center) ── */
+.admin-workout-list {
+  margin-top: 10px;
+  border-top: 1px solid #eee;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.admin-workout-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #555;
+  padding: 4px 6px;
+  background: #f9f9f9;
+  border-radius: 5px;
+}
+.awr-date  { color: #888; min-width: 72px; }
+.awr-type  { font-weight: 600; color: #333; }
+.awr-dist  { color: #0066ff; }
+.awr-dur   { color: #555; }
+.awr-mood  { font-size: 14px; }
+.awr-mood-flag { font-size: 11px; color: #b64500; font-style: italic; }
+
+/* ── Groups section (Command Center) ── */
+.cc-section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.cc-section-head h2 { margin: 0; }
+.group-admin-list { display: flex; flex-direction: column; gap: 8px; }
+.group-admin-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #f5f0ff;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.group-admin-row strong { font-size: 14px; color: #333; }
+.group-member-count { color: #7c3aed; font-weight: 600; white-space: nowrap; }
+.group-member-names { color: #666; font-style: italic; }
+.athlete-group-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #ede9fe;
+  color: #7c3aed;
+  margin-bottom: 8px;
+}
+.athlete-group-tag.no-group { background: #f0f0f0; color: #aaa; }
+
+/* ── Mood adaptation card (dashboard) ── */
+.mood-adaptation-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  border-left: 4px solid;
+}
+.mood-adapt-proceed  { background: #e8f5e9; border-color: #4CAF50; color: #1b5e20; }
+.mood-adapt-hold     { background: #fff8e1; border-color: #FF9800; color: #7a4a00; }
+.mood-adapt-recovery { background: #fce4ec; border-color: #E91E63; color: #880e4f; }
+.mood-adapt-emoji { font-size: 2rem; line-height: 1; flex-shrink: 0; }
+.mood-adapt-body strong { display: block; font-size: 13px; margin-bottom: 4px; }
+.mood-adapt-body p { margin: 0; font-size: 13px; line-height: 1.5; }
+
 /* ── Mobile ── */
 @media (max-width: 480px) {
   .stat-row { flex-wrap: wrap; }

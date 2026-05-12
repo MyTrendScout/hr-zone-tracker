@@ -17,6 +17,15 @@ try {
 // STATE
 // ═══════════════════════════════════════════════════════════════
 let planViewMode = null; // "calendar" or "chart" — persists during session
+let expandedAthletes = new Set(); // userIds with workouts expanded in Command Center
+
+const MOODS = [
+  { key: "great",      label: "Great",      emoji: "😁", score: 5 },
+  { key: "happy",      label: "Happy",      emoji: "🙂", score: 4 },
+  { key: "soso",       label: "So-So",      emoji: "😐", score: 3 },
+  { key: "offrun",     label: "Off Run",    emoji: "😕", score: 2 },
+  { key: "struggling", label: "Struggling", emoji: "😩", score: 1 }
+];
 
 let state = {
   user:            null,
@@ -27,6 +36,9 @@ let state = {
   allUsers:        null,
   pendingRequests: [],
   pendingCount:    0,
+  editingWorkout:  null,
+  groupData:       null,
+  adminGroups:     [],
   view:            "login",
   loading:         false,
   error:           null
@@ -73,6 +85,45 @@ async function saveData(docName, data) {
 
 async function addWorkout(data) {
   await userDoc().collection("workouts").add(data);
+}
+
+async function updateWorkout(id, data) {
+  await userDoc().collection("workouts").doc(id).set(data);
+}
+
+async function loadGroupData(groupId, currentUserId) {
+  const groupSnap = await db.collection("groups").doc(groupId).get();
+  if (!groupSnap.exists) return null;
+  const group = groupSnap.data();
+  const otherIds = (group.memberIds || []).filter(id => id !== currentUserId);
+  if (!otherIds.length) return { id: groupId, name: group.name, members: [] };
+
+  const approvedSnap = await db.collection("approvedUsers").get();
+  const nameMap = {};
+  approvedSnap.docs.forEach(d => { nameMap[d.id] = d.data().name; });
+
+  const members = await Promise.all(otherIds.map(async uid => {
+    const snap = await db.collection("users").doc(uid).collection("workouts")
+      .orderBy("date", "desc").limit(5).get();
+    return { userId: uid, name: nameMap[uid] || "Teammate", workouts: snap.docs.map(d => ({ id: d.id, ...d.data() })) };
+  }));
+  return { id: groupId, name: group.name, members };
+}
+
+async function createGroup(name) {
+  const ref = await db.collection("groups").add({ name, memberIds: [], createdAt: new Date().toISOString() });
+  return ref.id;
+}
+
+async function setAthleteGroup(userId, groupId) {
+  // Remove from old group first
+  const groupsSnap = await db.collection("groups").where("memberIds", "array-contains", userId).get();
+  await Promise.all(groupsSnap.docs.map(d => d.ref.update({ memberIds: d.data().memberIds.filter(id => id !== userId) })));
+  if (groupId) {
+    await db.collection("groups").doc(groupId).update({ memberIds: firebase.firestore.FieldValue.arrayUnion(userId) });
+  }
+  // Save groupId on user profile
+  await db.collection("users").doc(userId).collection("data").doc("profile").set({ groupId: groupId || null }, { merge: true });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -209,11 +260,23 @@ function validateGoal(targetPaceStr, predictedSec) {
   if (!tps) return null;
   const goalSec = secsToMarathon(tps);
   const pctDiff = (predictedSec - goalSec) / predictedSec;
+  const gapMin  = Math.round(Math.abs(predictedSec - goalSec) / 60);
+  const predStr = secsToHMS(predictedSec);
+  const goalStr = secsToHMS(goalSec);
   let status, msg;
-  if (pctDiff <= 0.02)      { status = "achievable"; msg = "Your goal is right in line with your current fitness. Great target."; }
-  else if (pctDiff <= 0.12) { status = "stretch";    msg = `Requires ~${Math.round(pctDiff * 100)}% improvement. A solid stretch goal — achievable with consistent training.`; }
-  else if (pctDiff <= 0.22) { status = "aggressive"; msg = `Requires ~${Math.round(pctDiff * 100)}% improvement. Aggressive for one cycle. Consider a stepping-stone goal.`; }
-  else                      { status = "unsafe";     msg = `Requires ~${Math.round(pctDiff * 100)}% improvement. This risks overtraining and injury. We strongly recommend a safer goal.`; }
+  if (pctDiff <= 0.02) {
+    status = "achievable";
+    msg = `Right on target — your current fitness already predicts ${predStr}, right in line with your ${goalStr} goal. Stay consistent and trust the plan.`;
+  } else if (pctDiff <= 0.12) {
+    status = "stretch";
+    msg = `Your current fitness predicts ${predStr}. Your goal is ${goalStr} — that's ${gapMin} minutes to find. A real stretch goal, and fully achievable with consistent training.`;
+  } else if (pctDiff <= 0.22) {
+    status = "aggressive";
+    msg = `You're currently predicting ${predStr}. Your goal is ${goalStr} — ${gapMin} minutes away. Big goal. Let's train hard this cycle and reassess — you may want a stepping-stone target for race day while keeping the bigger goal in mind.`;
+  } else {
+    status = "unsafe";
+    msg = `You're currently predicting ${predStr}. Your goal of ${goalStr} is ${gapMin} minutes ahead — that's a large jump for one training cycle. Most runners get there in 2–3 blocks. Let's see what this training produces and close the gap together.`;
+  }
   const realisticSec = predictedSec * 0.92;
   const rpm = realisticSec / MARATHON_MI;
   return { status, msg, goalSec, predictedSec, realisticPace: `${Math.floor(rpm / 60)}:${pad(Math.round(rpm % 60))}`, realisticFinishStr: secsToHMS(realisticSec) };
@@ -606,6 +669,54 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) 
 }
 
 // ═══════════════════════════════════════════════════════════════
+// MOOD ADAPTATION ENGINE
+// ═══════════════════════════════════════════════════════════════
+function moodScore(key) {
+  return MOODS.find(m => m.key === key)?.score ?? 3;
+}
+
+function calcBlockMoodAvg(workouts, blockStartDate, blockEndDate) {
+  const start = new Date(blockStartDate);
+  const end   = new Date(blockEndDate);
+  const block = workouts.filter(w => {
+    const d = new Date(w.date);
+    return d >= start && d <= end && w.moodOriginal;
+  });
+  if (block.length < 2) return null;
+  return block.reduce((sum, w) => sum + moodScore(w.moodOriginal), 0) / block.length;
+}
+
+function getBlockMoodAdaptation(workouts, weeksIn, trainingStart) {
+  if (weeksIn < 4) return null;
+  const blockWeek = weeksIn % 4;
+  if (blockWeek !== 0) return null; // only evaluate at the start of a new block
+
+  // Previous block = 4 weeks ending just before this week
+  const blockEndMs   = new Date(trainingStart).getTime() + weeksIn * 7 * 24 * 60 * 60 * 1000;
+  const blockStartMs = blockEndMs - 28 * 24 * 60 * 60 * 1000;
+  const avg = calcBlockMoodAvg(
+    workouts,
+    new Date(blockStartMs).toISOString().split("T")[0],
+    new Date(blockEndMs).toISOString().split("T")[0]
+  );
+  if (avg === null) return null;
+
+  const emoji = avg >= 4 ? "😁" : avg >= 3 ? "🙂" : avg >= 2 ? "😐" : "😩";
+  if (avg >= 3.5) return { action: "proceed",  emoji, avg, msg: "Strong block — plan progressing normally. Keep it up." };
+  if (avg >= 2.5) return { action: "hold",     emoji, avg, msg: "Mixed block — holding mileage steady this block. Listen to your body." };
+  return              { action: "recovery", emoji, avg, msg: "Tough block — adding an extra recovery week before pushing forward. Rest is training too." };
+}
+
+function getConsecutiveStruggling(workouts) {
+  let count = 0;
+  for (const w of workouts) {
+    if (w.moodOriginal === "struggling" || w.moodOriginal === "offrun") count++;
+    else break;
+  }
+  return count;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // DOM HELPERS
 // ═══════════════════════════════════════════════════════════════
 function el(tag, props, ...children) {
@@ -707,6 +818,7 @@ function getView() {
     case "setup-prefs":    return SetupPrefs();
     case "setup-goal":     return SetupGoal();
     case "update-plan":    return UpdatePlanPage();
+    case "edit-profile":   return EditProfile();
     case "log-workout":    return LogWorkout();
     case "history":        return WorkoutHistory();
     case "plan":           return PlanPage();
@@ -774,7 +886,8 @@ function LoginPage() {
       const info = doc.data();
       const user = { id: doc.id, name: info.name, admin: false };
       const data = await loadUserData(doc.id);
-      setState({ user, ...data, loading: false, error: null, view: data.profile ? "dashboard" : "setup-profile" });
+      const groupData = data.profile?.groupId ? await loadGroupData(data.profile.groupId, doc.id) : null;
+      setState({ user, ...data, groupData, loading: false, error: null, view: data.profile ? "dashboard" : "setup-profile" });
     } catch (err) {
       setState({ loading: false, error: "Could not connect to Firebase: " + err.message });
     }
@@ -805,7 +918,7 @@ function ForgotPasswordPage() {
 }
 
 function doLogout() {
-  setState({ user: null, profile: null, zones: null, goal: null, workouts: [], allUsers: null, pendingRequests: [], pendingCount: 0, view: "login", error: null });
+  setState({ user: null, profile: null, zones: null, goal: null, workouts: [], allUsers: null, pendingRequests: [], pendingCount: 0, editingWorkout: null, groupData: null, adminGroups: [], view: "login", error: null });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1010,6 +1123,86 @@ function SetupPrefs() {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+// EDIT PROFILE & PLAN SETTINGS
+// ═══════════════════════════════════════════════════════════════
+function EditProfile() {
+  const { profile } = state;
+  const today = new Date().toISOString().split("T")[0];
+
+  const save = async () => {
+    const name      = document.getElementById("ep-name")?.value.trim();
+    const age       = parseInt(document.getElementById("ep-age")?.value);
+    const heightFt  = parseInt(document.getElementById("ep-ht-ft")?.value) || 0;
+    const heightIn  = parseInt(document.getElementById("ep-ht-in")?.value) || 0;
+    const weight    = parseFloat(document.getElementById("ep-weight")?.value);
+    const restingHR = parseInt(document.getElementById("ep-rhr")?.value);
+    const raceDate      = document.getElementById("ep-race")?.value;
+    const trainingStart = document.getElementById("ep-start")?.value;
+    const fitnessLevel  = document.getElementById("ep-level")?.value;
+    const longRunDay    = parseInt(document.getElementById("ep-lrd")?.value);
+    const trainingDays  = parseInt(document.getElementById("ep-days")?.value);
+
+    if (!name || !age || !weight || !restingHR) { showError("Please fill in all required fields."); return; }
+    if (age < 18 || age > 95)                   { showError("Please enter a valid age (18–95)."); return; }
+    if (restingHR < 35 || restingHR > 100)       { showError("Resting HR should be between 35–100 bpm."); return; }
+    if (!raceDate)                               { showError("Please enter your race date."); return; }
+    if (new Date(raceDate) <= new Date())        { showError("Race date must be in the future."); return; }
+    if (!fitnessLevel)                           { showError("Please select your fitness level."); return; }
+
+    setState({ loading: true });
+    const updated = { ...profile, name, age, heightFt, heightIn, weight, restingHR, raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays };
+    await saveData("profile", updated);
+
+    // Recalculate zones if age or resting HR changed
+    let updatedZones = state.zones;
+    if (state.zones && (age !== profile.age || restingHR !== profile.restingHR)) {
+      const maxHR = state.zones.method === "tested" ? state.zones.maxHR : estimateMaxHR(age);
+      updatedZones = { ...calcZones(maxHR, restingHR), method: state.zones.method, lastTested: state.zones.lastTested || null };
+      await saveData("zones", updatedZones);
+    }
+
+    // Re-validate goal against current workouts
+    let updatedGoal = state.goal;
+    if (state.goal?.targetPace && state.workouts.length) {
+      const pred = getBestPrediction(state.workouts);
+      if (pred) {
+        updatedGoal = { ...state.goal, validation: validateGoal(state.goal.targetPace, pred.sec) };
+        await saveData("goal", updatedGoal);
+      }
+    }
+
+    setState({ profile: updated, zones: updatedZones, goal: updatedGoal, loading: false, view: "dashboard", error: null });
+  };
+
+  return div("page",
+    div("card",
+      pageHeader("Edit Profile & Plan Settings", () => setState({ view: "dashboard" })),
+      p("Changes take effect immediately. Your logged workouts are not affected."),
+      errorBanner(),
+      h3("Personal Info"),
+      field("Your Name *", input({ id: "ep-name", type: "text", value: profile?.name || "" })),
+      field("Age *", input({ id: "ep-age", type: "number", value: String(profile?.age || ""), min: "18", max: "95" })),
+      div("field-row",
+        field("Height (ft)", input({ id: "ep-ht-ft", type: "number", value: String(profile?.heightFt || ""), min: "4", max: "7" })),
+        field("Height (in)", input({ id: "ep-ht-in", type: "number", value: String(profile?.heightIn || ""), min: "0", max: "11" }))
+      ),
+      field("Weight (lbs) *", input({ id: "ep-weight", type: "number", step: "0.1", value: String(profile?.weight || "") })),
+      field("Resting Heart Rate (bpm) *", input({ id: "ep-rhr", type: "number", value: String(profile?.restingHR || ""), min: "35", max: "100" })),
+      h3("Training Plan"),
+      field("Race Date *", input({ id: "ep-race", type: "date", value: profile?.raceDate || "", min: today })),
+      field("Training Start Date *", input({ id: "ep-start", type: "date", value: profile?.trainingStart || "" })),
+      field("Current Fitness Level *", select("ep-level", [
+        ["Select your level…", ""],
+        ...Object.entries(PLAN_LEVELS).map(([k, v]) => [v.label, k])
+      ], normalizeFitnessLevel(profile?.fitnessLevel) || "")),
+      field("Long Run Day", select("ep-lrd", DNAMES.map((d, i) => [d, i]), profile?.longRunDay ?? 6)),
+      field("Training Days Per Week", select("ep-days", [[3,3],[4,4],[5,5],[6,6]].map(([l,v]) => [`${l} days`, v]), profile?.trainingDays || 4)),
+      btn("Save Changes", save)
+    )
+  );
+}
+
 function UpdatePlanPage() {
   const today = new Date().toISOString().split("T")[0];
   const save = async () => {
@@ -1081,9 +1274,12 @@ function Dashboard() {
   const phase         = weeks != null ? weekData?.phase || getPhase(weeks) : null;
   const plan          = (profile?.raceDate && profile?.longRunDay != null && weekData)
     ? buildFlexibleWeekPlan(profile.longRunDay, profile.trainingDays || 4, weekData, zones, goal) : null;
-  const recentWeights = workouts.filter(w => w.weightLbs).slice(0, 7).map(w => w.weightLbs);
-  const weightWarning = checkWeightFlag(recentWeights);
-  const retestDue     = zones?.lastTested && daysSince(zones.lastTested) > 28;
+  const recentWeights  = workouts.filter(w => w.weightLbs).slice(0, 7).map(w => w.weightLbs);
+  const weightWarning  = checkWeightFlag(recentWeights);
+  const retestDue      = zones?.lastTested && daysSince(zones.lastTested) > 28;
+  const weeksIn        = weekData ? Math.max(0, Math.floor((Date.now() - new Date(profile?.trainingStart || profile?.createdAt)) / (7 * 24 * 60 * 60 * 1000))) : 0;
+  const moodAdaptation = profile ? getBlockMoodAdaptation(workouts, weeksIn, profile.trainingStart || profile.createdAt) : null;
+  const toughStreak    = getConsecutiveStruggling(workouts);
   const needsPlanSetup = profile && !profile.fitnessLevel;
   const todayIdx      = new Date().getDay();
   const todayPlan     = plan ? plan[todayIdx] : null;
@@ -1165,9 +1361,35 @@ function Dashboard() {
       btn("Log a Workout",          () => setState({ view: "log-workout" })),
       btn("View Workout History",   () => setState({ view: "history" })),
       btn("View Full Training Plan",() => setState({ view: "plan" })),
-      btn("Update Fitness Level / Rebuild Plan", () => setState({ view: "update-plan" }), "btn-secondary")
+      btn("Update Fitness Level / Rebuild Plan", () => setState({ view: "update-plan" }), "btn-secondary"),
+      btn("Edit Profile & Plan Settings", () => setState({ view: "edit-profile" }), "btn-secondary")
     )
   );
+
+  const groupCard = state.groupData ? div("card group-card",
+    h2(`${state.groupData.name} — Your Group`),
+    state.groupData.members.length === 0
+      ? p("No other members in your group yet.")
+      : div("group-members",
+          state.groupData.members.map(member => div("group-member",
+            el("strong", { className: "group-member-name" }, member.name),
+            member.workouts.length === 0
+              ? p("No workouts logged yet.")
+              : div("group-workout-rows",
+                  member.workouts.map(w => {
+                    const mood = MOODS.find(m => m.key === w.mood);
+                    return div("group-workout-row",
+                      el("span", { className: "gw-date" }, w.date),
+                      el("span", { className: "gw-type" }, w.type || "Run"),
+                      w.distanceMi ? el("span", { className: "gw-dist" }, `${w.distanceMi} mi`) : null,
+                      el("span", { className: "gw-dur" }, secsToHMS(w.durationSec)),
+                      mood ? el("span", { className: "gw-mood" }, mood.emoji) : null
+                    );
+                  })
+                )
+          ))
+        )
+  ) : null;
 
   return div("page",
     el("header", null,
@@ -1187,9 +1409,17 @@ function Dashboard() {
     retestDue    ? div("banner banner-info",    "⏱ 4+ weeks since your last field test. ", el("span", { className: "banner-link", onClick: () => setState({ view: "test" }) }, "Run it now →")) : null,
     weightWarning? div("banner banner-warning",  `⚖️ ${weightWarning}`) : null,
     !goal        ? div("banner banner-info",     "🎯 No race goal set yet. ", el("span", { className: "banner-link", onClick: () => setState({ view: "setup-goal" }) }, "Set one now →")) : null,
+    toughStreak >= 3 ? div("banner banner-warning", `😩 You've logged ${toughStreak} tough workouts in a row. Consider an easy day or rest — recovery is part of the plan.`) : null,
+    moodAdaptation ? div(`mood-adaptation-card mood-adapt-${moodAdaptation.action}`,
+      el("span", { className: "mood-adapt-emoji" }, moodAdaptation.emoji),
+      div("mood-adapt-body",
+        el("strong", null, "Block Check-In"),
+        p(moodAdaptation.msg)
+      )
+    ) : null,
 
     div("dashboard-grid",
-      div("dash-col", raceCard, zonesCard),
+      div("dash-col", raceCard, zonesCard, groupCard),
       div("dash-col", todayCard, weekCard, trackCard)
     )
   );
@@ -1209,6 +1439,10 @@ const WORKOUT_TYPES = [
 const RUNNING_TYPES = new Set(["Run"]);
 
 function LogWorkout() {
+  const editing = state.editingWorkout;
+  const backDest = editing ? "history" : "dashboard";
+  let selectedMood = editing?.mood || null;
+
   const save = async () => {
     const date       = document.getElementById("w-date")?.value;
     const type       = document.getElementById("w-type")?.value || "Run";
@@ -1221,13 +1455,18 @@ function LogWorkout() {
 
     const isRun = RUNNING_TYPES.has(type);
 
-    if (!date) { showError("Please enter the date."); return; }
+    if (!date)                                     { showError("Please enter the date."); return; }
     if (isRun && (!distanceMi || distanceMi <= 0)) { showError("Please enter a valid distance."); return; }
-    if (!durStr) { showError("Please enter the duration."); return; }
+    if (!durStr)                                   { showError("Please enter the duration."); return; }
+    if (!selectedMood)                             { showError("Please select how you felt about this workout."); return; }
     const durationSec = parseDuration(durStr);
     if (!durationSec) { showError("Enter duration as M:SS (e.g. 54:30) or H:MM:SS (e.g. 1:32:00)."); return; }
 
-    let workout = { date, type, durationSec, avgHR: avgHR || null, notes: notes || "", weightLbs };
+    let workout = {
+      date, type, durationSec, avgHR: avgHR || null, notes: notes || "", weightLbs,
+      mood: selectedMood,
+      moodOriginal: editing ? (editing.moodOriginal || selectedMood) : selectedMood
+    };
 
     if (isRun && distanceMi) {
       const pace = paceInput || calcPaceStr(durationSec, distanceMi);
@@ -1238,40 +1477,73 @@ function LogWorkout() {
     }
 
     setState({ loading: true });
-    await addWorkout(workout);
+    if (editing) {
+      await updateWorkout(editing.id, workout);
+    } else {
+      await addWorkout(workout);
+    }
     const data = await loadUserData(state.user.id);
     let updatedGoal = state.goal;
     if (state.goal?.targetPace) {
       const newPred = getBestPrediction(data.workouts);
       if (newPred) { updatedGoal = { ...state.goal, validation: validateGoal(state.goal.targetPace, newPred.sec) }; await saveData("goal", updatedGoal); }
     }
-    setState({ workouts: data.workouts, goal: updatedGoal, loading: false, view: "dashboard", error: null });
+    setState({ workouts: data.workouts, goal: updatedGoal, editingWorkout: null, loading: false, view: editing ? "history" : "dashboard", error: null });
   };
 
-  // Reactively show/hide distance & pace based on type selection
-  const typeSelect = select("w-type", WORKOUT_TYPES.map(t => [t, t]), "Run");
-  const distRow  = field("Distance (miles)", input({ id: "w-dist", type: "number", placeholder: "e.g. 6.2", step: "0.01", min: "0.1" }));
-  const paceRow  = field("Pace per mile (M:SS, optional)", input({ id: "w-pace", type: "text", placeholder: "e.g. 9:26 — calculated if blank" }));
+  // Mood picker
+  const moodBtns = MOODS.map(m => {
+    const b = div(`mood-btn${selectedMood === m.key ? " selected" : ""}`,
+      el("span", { className: "mood-emoji" }, m.emoji),
+      el("span", { className: "mood-label" }, m.label)
+    );
+    b.addEventListener("click", () => {
+      selectedMood = m.key;
+      document.querySelectorAll(".mood-btn").forEach(x => x.classList.remove("selected"));
+      b.classList.add("selected");
+    });
+    return b;
+  });
+  const moodPicker = div("mood-picker-wrap",
+    el("label", { className: "mood-picker-label" }, "How did it feel? *"),
+    div("mood-picker", ...moodBtns)
+  );
 
+  // Duration pre-fill
+  const durDefault = editing?.durationSec ? secsToHMS(editing.durationSec) : "";
+
+  // Type select with reactive show/hide
+  const initType = editing?.type || "Run";
+  const typeSelect = select("w-type", WORKOUT_TYPES.map(t => [t, t]), initType);
+  const distRow  = field("Distance (miles)", input({ id: "w-dist", type: "number", placeholder: "e.g. 6.2", step: "0.01", min: "0.1", value: editing?.distanceMi || "" }));
+  const paceRow  = field("Pace per mile (M:SS, optional)", input({ id: "w-pace", type: "text", placeholder: "e.g. 9:26 — calculated if blank", value: editing?.pace || "" }));
+
+  distRow.style.display = "";
+  paceRow.style.display = RUNNING_TYPES.has(initType) ? "" : "none";
   typeSelect.addEventListener("change", () => {
     const isRun = RUNNING_TYPES.has(typeSelect.value);
-    distRow.style.display  = isRun ? "" : "block"; // always show distance — walks have distance too
-    paceRow.style.display  = isRun ? "" : "none";
+    distRow.style.display = "";
+    paceRow.style.display = isRun ? "" : "none";
   });
+
+  const title  = editing ? "Edit Workout" : "Log a Workout";
+  const saveLbl = editing ? "Update Workout" : "Save Workout";
 
   return div("page",
     div("card",
-      pageHeader("Log a Workout", () => setState({ view: "dashboard" })),
+      pageHeader(title, () => setState({ editingWorkout: null, view: backDest })),
+      editing ? div("banner banner-info", `Editing workout from ${editing.date} — changes replace the original.`) : null,
       errorBanner(),
-      field("Date *", input({ id: "w-date", type: "date", value: new Date().toISOString().split("T")[0] })),
+      field("Date *", input({ id: "w-date", type: "date", value: editing?.date || new Date().toISOString().split("T")[0] })),
       field("Activity type *", typeSelect),
       distRow,
-      field("Duration * (M:SS or H:MM:SS)", input({ id: "w-dur", type: "text", placeholder: "e.g. 58:30 or 1:02:45" })),
-      field("Average HR (bpm, optional)", input({ id: "w-hr", type: "number", placeholder: "e.g. 142", min: "60", max: "220" })),
+      field("Duration * (M:SS or H:MM:SS)", input({ id: "w-dur", type: "text", placeholder: "e.g. 58:30 or 1:02:45", value: durDefault })),
+      field("Average HR (bpm, optional)", input({ id: "w-hr", type: "number", placeholder: "e.g. 142", min: "60", max: "220", value: editing?.avgHR || "" })),
       paceRow,
-      field("Weight today (lbs, optional)", input({ id: "w-weight", type: "number", placeholder: "e.g. 162.5", step: "0.1" })),
-      field("Notes (optional)", input({ id: "w-notes", type: "text", placeholder: "How did it feel?" })),
-      btn("Save Workout", save)
+      field("Weight today (lbs, optional)", input({ id: "w-weight", type: "number", placeholder: "e.g. 162.5", step: "0.1", value: editing?.weightLbs || "" })),
+      field("Notes (optional)", input({ id: "w-notes", type: "text", placeholder: "How did it feel?", value: editing?.notes || "" })),
+      moodPicker,
+      btn(saveLbl, save)
     )
   );
 }
@@ -1279,6 +1551,19 @@ function LogWorkout() {
 // ═══════════════════════════════════════════════════════════════
 // WORKOUT HISTORY
 // ═══════════════════════════════════════════════════════════════
+function workoutMoodTag(w, showFlag) {
+  const cur  = MOODS.find(m => m.key === w.mood);
+  const orig = MOODS.find(m => m.key === w.moodOriginal);
+  if (!cur && !orig) return null;
+  const changed = showFlag && orig && cur && orig.key !== cur.key;
+  return div("workout-mood",
+    el("span", { className: `mood-tag mood-${cur?.key || orig?.key}` },
+      `${cur?.emoji || orig?.emoji} ${cur?.label || orig?.label}`
+    ),
+    changed ? el("span", { className: "mood-changed-flag" }, `(logged: ${orig.emoji} ${orig.label})`) : null
+  );
+}
+
 function WorkoutHistory() {
   return div("page",
     el("header", null, h1("Workout History"), btn("← Back", () => setState({ view: "dashboard" }), "btn-back")),
@@ -1292,7 +1577,8 @@ function WorkoutHistory() {
                 el("span", { className: "workout-type-tag" }, w.type || "Run"),
                 el("span", { className: "workout-dist" },
                   w.distanceMi ? `${w.distanceMi} mi — ${secsToHMS(w.durationSec)}` : secsToHMS(w.durationSec)
-                )
+                ),
+                btn("Edit", () => setState({ editingWorkout: w, view: "log-workout" }), "btn-edit-workout")
               ),
               div("workout-details",
                 w.pace      ? span("⏱ ", w.pace, "/mi")        : null,
@@ -1300,6 +1586,7 @@ function WorkoutHistory() {
                 w.weightLbs ? span("⚖️ ", w.weightLbs, " lbs") : null,
                 w.predictedFinishStr ? span("📈 ", w.predictedFinishStr) : null
               ),
+              workoutMoodTag(w, false),
               w.notes ? div("workout-notes", w.notes) : null
             )
           )
@@ -1493,16 +1780,18 @@ async function loadCommandCenter() {
   setState({ loading: true, view: "command", error: null });
   const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("Connection timed out.")), 10000));
   try {
-    const [approvedSnap, pendingSnap] = await Promise.race([
+    const [approvedSnap, pendingSnap, groupsSnap] = await Promise.race([
       Promise.all([
         db.collection("approvedUsers").get(),
-        db.collection("signupRequests").where("status", "==", "pending").get()
+        db.collection("signupRequests").where("status", "==", "pending").get(),
+        db.collection("groups").get()
       ]),
       timeout
     ]);
 
     const approved = approvedSnap.docs.map(d => ({ docId: d.id, ...d.data() }));
     const pending  = pendingSnap.docs.map(d => ({ docId: d.id, ...d.data() }));
+    const groups   = groupsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
     const allUsers = await Promise.race([
       Promise.all([
@@ -1512,7 +1801,7 @@ async function loadCommandCenter() {
       new Promise((_, rej) => setTimeout(() => rej(new Error("Timed out loading athlete data.")), 10000))
     ]);
 
-    setState({ allUsers, pendingRequests: pending, pendingCount: pending.length, loading: false });
+    setState({ allUsers, pendingRequests: pending, pendingCount: pending.length, adminGroups: groups, loading: false });
   } catch (err) {
     setState({ loading: false, error: "Command Center: " + err.message });
   }
@@ -1593,8 +1882,27 @@ async function changeAthletePassword(userId, name) {
   alert(`Password updated for ${name}. Let them know their new password.`);
 }
 
+async function handleCreateGroup() {
+  const name = window.prompt("Group name (e.g. Orlando, Tampa):");
+  if (!name?.trim()) return;
+  setState({ loading: true });
+  await createGroup(name.trim());
+  await loadCommandCenter();
+}
+
+async function handleAssignGroup(userId, userName, currentGroupId) {
+  const groups = state.adminGroups || [];
+  const options = ["(No group)", ...groups.map(g => g.name)].join("\n");
+  const choice  = window.prompt(`Assign ${userName} to a group:\n\n${options}\n\nType the exact group name (or leave blank to remove from group):`);
+  if (choice === null) return;
+  const matched = groups.find(g => g.name.toLowerCase() === choice.trim().toLowerCase());
+  setState({ loading: true });
+  await setAthleteGroup(userId, matched?.id || null);
+  await loadCommandCenter();
+}
+
 function CommandCenter() {
-  const { allUsers, pendingRequests } = state;
+  const { allUsers, pendingRequests, adminGroups } = state;
 
   return div("page",
     el("header", null,
@@ -1624,6 +1932,28 @@ function CommandCenter() {
       )
     ) : div("card", p("No pending access requests.")),
 
+    // ── Groups
+    div("card",
+      div("cc-section-head",
+        h2("Groups"),
+        btn("+ New Group", handleCreateGroup, "btn-secondary btn-sm")
+      ),
+      (!adminGroups || adminGroups.length === 0)
+        ? p("No groups yet. Create one to organize runners by location.")
+        : div("group-admin-list",
+            adminGroups.map(g => {
+              const members = (allUsers || []).filter(u => u.profile?.groupId === g.id);
+              return div("group-admin-row",
+                el("strong", null, g.name),
+                el("span", { className: "group-member-count" }, `${members.length} member${members.length !== 1 ? "s" : ""}`),
+                members.length > 0
+                  ? el("span", { className: "group-member-names" }, members.map(u => u.profile.name).join(", "))
+                  : null
+              );
+            })
+          )
+    ),
+
     // ── All athletes
     h2("Athletes"),
     div("user-cards",
@@ -1641,6 +1971,30 @@ function CommandCenter() {
         const retestDue = u.zones?.lastTested && daysSince(u.zones.lastTested) > 28;
         const last    = u.workouts[0];
 
+        const isExpanded = expandedAthletes.has(u.userId);
+        const toggleWorkouts = () => {
+          if (isExpanded) expandedAthletes.delete(u.userId);
+          else expandedAthletes.add(u.userId);
+          render();
+        };
+
+        const workoutList = isExpanded ? div("admin-workout-list",
+          u.workouts.length === 0 ? p("No workouts logged yet.") :
+          u.workouts.map(w => {
+            const cur  = MOODS.find(m => m.key === w.mood);
+            const orig = MOODS.find(m => m.key === w.moodOriginal);
+            const moodChanged = cur && orig && cur.key !== orig.key;
+            return div("admin-workout-row",
+              el("span", { className: "awr-date" }, w.date),
+              el("span", { className: "awr-type" }, w.type || "Run"),
+              w.distanceMi ? el("span", { className: "awr-dist" }, `${w.distanceMi} mi`) : null,
+              el("span", { className: "awr-dur" }, secsToHMS(w.durationSec)),
+              cur  ? el("span", { className: "awr-mood" }, cur.emoji) : null,
+              moodChanged ? el("span", { className: "awr-mood-flag" }, `← orig: ${orig.emoji} ${orig.label}`) : null
+            );
+          })
+        ) : null;
+
         return div("user-card",
           h3(u.profile.name + (u.admin ? " ⭐" : "")),
           div("stat-row",
@@ -1648,13 +2002,26 @@ function CommandCenter() {
             statBox("Runs",    u.workouts.length),
             statBox("Zones",   u.zones?.method || "none")
           ),
-          last  ? p(`Last run: ${last.date} — ${last.distanceMi} mi`) : p("No workouts yet."),
+          last  ? p(`Last run: ${last.date} — ${last.distanceMi ?? "?"} mi`) : p("No workouts yet."),
           pred  ? p(`📈 Predicted: ${pred.timeStr} (${pred.paceStr})`) : null,
           u.goal ? p(`🎯 Goal: ${u.goal.targetFinish} (${u.goal.targetPace}/mi)`) : null,
           u.goal?.validation ? div(`goal-status ${u.goal.validation.status}`, u.goal.validation.msg) : null,
           wFlag     ? div("flag", `⚖️ ${wFlag}`)                       : null,
           retestDue ? div("flag", "⏱ Field test overdue (4+ weeks)")   : null,
+          (() => {
+            const athleteGroup = adminGroups?.find(g => g.id === u.profile?.groupId);
+            return athleteGroup
+              ? el("span", { className: "athlete-group-tag" }, `Group: ${athleteGroup.name}`)
+              : el("span", { className: "athlete-group-tag no-group" }, "No group");
+          })(),
+          btn(
+            isExpanded ? "▲ Hide Workouts" : `▼ View Workouts (${u.workouts.length})`,
+            toggleWorkouts,
+            "btn-secondary btn-sm"
+          ),
+          workoutList,
           !u.admin ? div("card-admin-actions",
+            btn("Assign Group", () => handleAssignGroup(u.userId, u.profile.name, u.profile?.groupId), "btn-secondary btn-sm"),
             btn("Change Password", () => changeAthletePassword(u.userId, u.profile.name), "btn-secondary btn-sm"),
             btn("Delete Athlete",  () => deleteAthlete(u.userId, u.profile.name),         "btn-delete")
           ) : null
