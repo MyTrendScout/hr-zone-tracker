@@ -1,4 +1,4 @@
-// App.js — HR Zone Tracker
+// App.js — MyPaceZone
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE
@@ -136,7 +136,7 @@ async function notifyAdmin(name, note) {
       method:  "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify({
-        subject:   `HR Zone Tracker — new beta request from ${name}`,
+        subject:   `MyPaceZone — new beta request from ${name}`,
         name,
         note:      note || "(no note left)",
         timestamp: new Date().toLocaleString()
@@ -893,27 +893,48 @@ function LoginPage() {
     }
   };
 
-  const pwInput = input({ id: "pw", type: "password", placeholder: "Password" });
+  const pwInput = input({ id: "pw", type: "password", placeholder: "Enter your password" });
   pwInput.addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 
-  return div("login-page",
-    h1("HR Zone Tracker"),
-    p("Enter your password to access your training."),
-    errorBanner(),
-    div("field", pwInput),
-    btn("Login", doLogin),
-    div("link-row",
-      btn("Request Access →",  () => setState({ view: "request-access",  error: null }), "btn-link"),
-      btn("Forgot password?",  () => setState({ view: "forgot-password", error: null }), "btn-link")
+  const logoBadge = div("login-logo");
+  logoBadge.innerHTML = `<svg viewBox="0 0 56 56" width="56" height="56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><linearGradient id="llg" x1="0" y1="0" x2="56" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#56f6c8"/><stop offset="100%" stop-color="#5cd0ff"/></linearGradient></defs><rect width="56" height="56" rx="13" fill="#0f172e" stroke="rgba(255,255,255,0.12)" stroke-width="1.5"/><path d="M6 28 L15 28 L18 22 L21 10 L25 44 L28 20 L31 28 L50 28" stroke="url(#llg)" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+  const signInBtn = el("button", { className: "btn-signin" }, "Sign In →");
+  signInBtn.addEventListener("click", doLogin);
+
+  return div("login-screen",
+    div("login-hero",
+      div("login-brand",
+        logoBadge,
+        div("login-brand-name",
+          el("span", { className: "lbn-my" }, "My"),
+          el("span", { className: "lbn-wordmark" },
+            el("span", { className: "lbn-pace" }, "Pace"),
+            el("span", { className: "lbn-zone" }, "Zone")
+          )
+        )
+      ),
+      el("p", { className: "login-tagline" }, "Train smarter. Race confident.")
+    ),
+    div("login-card",
+      errorBanner(),
+      div("field", pwInput),
+      signInBtn,
+      div("link-row",
+        btn("Request Access",  () => setState({ view: "request-access",  error: null }), "btn-link"),
+        btn("Forgot password", () => setState({ view: "forgot-password", error: null }), "btn-link")
+      )
     )
   );
 }
 
 function ForgotPasswordPage() {
-  return div("login-page",
-    pageHeader("Forgot Password", () => setState({ view: "login", error: null })),
-    p("Contact the admin to reset your password. Once they reset it, come back and log in with your new one."),
-    btn("Back to Login", () => setState({ view: "login", error: null }))
+  return div("login-screen",
+    div("login-page",
+      pageHeader("Forgot Password", () => setState({ view: "login", error: null })),
+      p("Contact the admin to reset your password. Once they reset it, come back and log in with your new one."),
+      btn("Back to Login", () => setState({ view: "login", error: null }))
+    )
   );
 }
 
@@ -959,24 +980,28 @@ function RequestAccessPage() {
   };
 
   if (state.view === "request-sent") {
-    return div("login-page",
-      h1("Request Sent ✓"),
-      p("Your request has been submitted. We'll email you within 48 hours."),
-      p("Once approved, come back here and log in with the password you chose."),
-      btn("Back to Login", () => setState({ view: "login", error: null }))
+    return div("login-screen",
+      div("login-page",
+        h1("Request Sent ✓"),
+        p("Your request has been submitted. We'll email you within 48 hours."),
+        p("Once approved, come back here and log in with the password you chose."),
+        btn("Back to Login", () => setState({ view: "login", error: null }))
+      )
     );
   }
 
-  return div("login-page",
-    pageHeader("Request Access", () => setState({ view: "login", error: null })),
-    p("Fill in your details and we'll review your request."),
-    errorBanner(),
-    field("Your Name *",       input({ id: "ra-name",  type: "text",     placeholder: "e.g. Sara" })),
-    field("Email *",           input({ id: "ra-email", type: "email",    placeholder: "you@example.com" })),
-    field("Choose a Password *",   input({ id: "ra-pw",   type: "password", placeholder: "At least 6 characters" })),
-    field("Confirm Password *",    input({ id: "ra-pw2",  type: "password", placeholder: "Repeat your password" })),
-    field("Note (optional)",   input({ id: "ra-note",  type: "text",     placeholder: "e.g. Hi John, I'm your Thursday running partner" })),
-    btn("Submit Request", submit)
+  return div("login-screen",
+    div("login-page",
+      pageHeader("Request Access", () => setState({ view: "login", error: null })),
+      p("Fill in your details and we'll review your request."),
+      errorBanner(),
+      field("Your Name *",       input({ id: "ra-name",  type: "text",     placeholder: "e.g. Sara" })),
+      field("Email *",           input({ id: "ra-email", type: "email",    placeholder: "you@example.com" })),
+      field("Choose a Password *",   input({ id: "ra-pw",   type: "password", placeholder: "At least 6 characters" })),
+      field("Confirm Password *",    input({ id: "ra-pw2",  type: "password", placeholder: "Repeat your password" })),
+      field("Note (optional)",   input({ id: "ra-note",  type: "text",     placeholder: "e.g. Hi John, I'm your Thursday running partner" })),
+      btn("Submit Request", submit)
+    )
   );
 }
 
@@ -1296,7 +1321,11 @@ function Dashboard() {
       p(el("span", { className: "pred-main" }, `📈 Fitness estimate: ${prediction.timeStr} (${prediction.paceStr})`)),
       el("p", { className: "pred-source" }, `Based on your ${prediction.distMi}-mile run on ${prediction.date}${prediction.confident ? "" : " — accuracy improves as your long runs get longer"}`),
       goal ? p(`🎯 Your goal: ${goal.targetFinish} (${goal.targetPace}/mi)`) : null,
-      goal?.validation ? div(`goal-status ${goal.validation.status}`, goal.validation.msg) : null
+      goal?.validation
+        ? prediction?.confident
+          ? div(`goal-status ${goal.validation.status}`, goal.validation.msg)
+          : div("goal-status achievable", `Goal set — your prediction will sharpen once your long runs reach 8+ miles. Keep building.`)
+        : null
     ) : p("No fitness estimate yet — log a run of 4+ miles to see one.")
   ) : null;
 
@@ -1818,10 +1847,10 @@ async function approveRequest(docId, requestData) {
 
   // Open pre-filled approval email if we have their address
   if (requestData.email) {
-    const subject = encodeURIComponent("You're in — HR Zone Tracker beta access approved");
+    const subject = encodeURIComponent("You're in — MyPaceZone beta access approved");
     const body = encodeURIComponent(
       `Hi ${requestData.name},\n\n` +
-      `Great news — your beta access to HR Zone Tracker has been approved!\n\n` +
+      `Great news — your beta access to MyPaceZone has been approved!\n\n` +
       `Log in here using the password you chose:\n` +
       `https://mytrendscout.github.io/hr-zone-tracker/\n\n` +
       `Once you're in, complete your profile and we'll build your training plan.\n\n` +
@@ -1841,10 +1870,10 @@ async function rejectRequest(docId) {
 
   // Open pre-filled rejection email if we have their address
   if (req?.email) {
-    const subject = encodeURIComponent("HR Zone Tracker — beta request update");
+    const subject = encodeURIComponent("MyPaceZone — beta request update");
     const body = encodeURIComponent(
       `Hi ${req.name},\n\n` +
-      `Thanks for your interest in HR Zone Tracker.\n\n` +
+      `Thanks for your interest in MyPaceZone.\n\n` +
       `We're not able to add you to the beta right now, but we'll keep your info on file and reach out when a spot opens up.\n\n` +
       `John`
     );
