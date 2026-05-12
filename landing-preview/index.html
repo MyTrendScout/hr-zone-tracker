@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>HR Zone Tracker — Personalized marathon training, guided by heart rate</title>
+    <title>MyPaceZone — Personalized marathon training, guided by heart rate</title>
     <meta
       name="description"
       content="A free, invite-only marathon training app that builds a personalized plan from your race date and fitness level — then tells you exactly how hard to run each day, based on your heart rate zones."
@@ -23,25 +23,28 @@
 
     <header class="nav" aria-label="Primary">
       <div class="container nav__inner">
-        <a class="brand" href="#top" aria-label="HR Zone Tracker home">
+        <a class="brand" href="#top" aria-label="MyPaceZone home">
           <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true">
-            <rect width="32" height="32" rx="7" fill="#0f172e" stroke="#1f2a44" />
-            <path
-              d="M4 17 L10 17 L13 11 L17 22 L20 14 L23 17 L28 17"
-              fill="none"
-              stroke="url(#brandGrad)"
-              stroke-width="2.4"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
             <defs>
-              <linearGradient id="brandGrad" x1="0" y1="0" x2="32" y2="0">
+              <linearGradient id="brandGrad" x1="0" y1="0" x2="32" y2="0" gradientUnits="userSpaceOnUse">
                 <stop offset="0%" stop-color="#56f6c8" />
                 <stop offset="100%" stop-color="#5cd0ff" />
               </linearGradient>
             </defs>
+            <rect width="32" height="32" rx="7" fill="#0f172e" stroke="#1f2a44" stroke-width="1.2"/>
+            <path
+              d="M3 16 L9 16 L11 13 L13 8 L15 24 L17 14 L19 16 L29 16"
+              fill="none"
+              stroke="url(#brandGrad)"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
-          <span class="brand__name">HR Zone Tracker</span>
+          <span class="brand__name">
+            <span class="brand__my">My</span>
+            <span class="brand__wordmark"><span class="brand__pace">Pace</span><span class="brand__zone">Zone</span></span>
+          </span>
         </a>
 
         <nav class="nav__links" aria-label="Primary navigation">
@@ -74,7 +77,7 @@
           </h1>
 
           <p class="hero__sub">
-            HR Zone Tracker builds a personalized training plan backward from your race date,
+            MyPaceZone builds a personalized training plan backward from your race date,
             tells you exactly how far and how hard to run each day — and keeps you in the
             right zone so you arrive at the start line ready, not burned out.
           </p>
@@ -164,7 +167,7 @@
               <div class="mock__dots" aria-hidden="true">
                 <span></span><span></span><span></span>
               </div>
-              <div class="mock__url" aria-hidden="true">HR Zone Tracker / Week 14 — <strong>Build Phase</strong></div>
+              <div class="mock__url" aria-hidden="true">MyPaceZone / Week 14 — <strong>Build Phase</strong></div>
               <div class="mock__avatar" aria-hidden="true">JB</div>
             </div>
 
@@ -301,7 +304,7 @@
               <span class="grad">That's intentional.</span>
             </h2>
             <p class="scope__lede">
-              HR Zone Tracker is invite-only right now. We're letting in a small group of real
+              MyPaceZone is invite-only right now. We're letting in a small group of real
               runners so we can build the right thing — not just ship features nobody needs.
               Access is free. What we ask for in return is honesty.
             </p>
@@ -410,17 +413,20 @@
       <div class="container footer__inner">
         <div class="footer__brand">
           <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true">
-            <rect width="32" height="32" rx="7" fill="#0f172e" stroke="#1f2a44" />
+            <rect width="32" height="32" rx="7" fill="#0f172e" stroke="#1f2a44" stroke-width="1.2"/>
             <path
-              d="M4 17 L10 17 L13 11 L17 22 L20 14 L23 17 L28 17"
+              d="M3 16 L9 16 L11 13 L13 8 L15 24 L17 14 L19 16 L29 16"
               fill="none"
               stroke="#56f6c8"
-              stroke-width="2.4"
+              stroke-width="2.2"
               stroke-linecap="round"
               stroke-linejoin="round"
             />
           </svg>
-          <span>HR Zone Tracker</span>
+          <span class="brand__name">
+            <span class="brand__my">My</span>
+            <span class="brand__wordmark"><span class="brand__pace">Pace</span><span class="brand__zone">Zone</span></span>
+          </span>
         </div>
 
         <p class="footer__tag">
@@ -435,7 +441,7 @@
         </ul>
 
         <p class="footer__legal">
-          © <span id="year">2026</span> HR Zone Tracker. Currently in private beta.
+          © <span id="year">2026</span> MyPaceZone. Currently in private beta.
         </p>
       </div>
     </footer>

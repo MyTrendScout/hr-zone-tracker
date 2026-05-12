@@ -1,5 +1,5 @@
 /* ============================================================
-   HR Zone Tracker — landing styles
+   MyPaceZone — landing styles
    Dark navy / charcoal base, electric green/cyan accents.
    ============================================================ */
 
@@ -103,8 +103,12 @@ a { color: inherit; text-decoration: none; }
   display: inline-flex; align-items: center; gap: 10px;
   color: var(--ink-0); font-weight: 600; letter-spacing: -0.01em;
 }
-.brand__mark { width: 28px; height: 28px; }
-.brand__name { font-size: 15px; }
+.brand__mark { width: 32px; height: 32px; flex-shrink: 0; }
+.brand__name  { display: flex; flex-direction: column; line-height: 1; gap: 1px; }
+.brand__my    { font-size: 9px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-2); }
+.brand__wordmark { font-size: 17px; font-weight: 800; letter-spacing: -0.02em; }
+.brand__pace  { color: var(--ink-0); }
+.brand__zone  { color: var(--acc-0); }
 
 .nav__links { display: flex; align-items: center; gap: 28px; }
 .nav__links a {
@@ -657,7 +661,7 @@ a { color: inherit; text-decoration: none; }
   .compare__row--head { display: none; }
   .compare__here { text-align: left; }
   .compare__here::before {
-    content: "HR Zone Tracker — ";
+    content: "MyPaceZone — ";
     color: var(--ink-3); font-weight: 400;
   }
   .compare__row span:nth-child(2)::before {
