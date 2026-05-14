@@ -257,6 +257,18 @@ a { color: inherit; text-decoration: none; }
   color: var(--acc-0);
   font-weight: 700;
 }
+.hero__works {
+  margin: 20px 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--acc-0);
+}
+.hero__works-sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
 
 /* ============================================================
    SECTIONS / SHARED
