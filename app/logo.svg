@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 60" width="220" height="60" role="img" aria-label="MyPaceZone">
+  <title>MyPaceZone</title>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="60" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#56f6c8"/>
+      <stop offset="100%" stop-color="#5cd0ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Badge icon -->
+  <rect width="60" height="60" rx="13" fill="#0f172e" stroke="#1f2a44" stroke-width="1.5"/>
+  <path d="M7 30 L16 30 L19 24 L22 12 L26 46 L29 22 L32 30 L53 30"
+        stroke="url(#g)" stroke-width="3" fill="none"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- "MY" label -->
+  <text x="74" y="22"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="13" font-weight="600" letter-spacing="2" fill="#888888">MY</text>
+
+  <!-- PaceZone wordmark -->
+  <text x="74" y="50"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="30" font-weight="800" letter-spacing="-0.5">
+    <tspan fill="#0f172e">Pace</tspan><tspan fill="#0ea5a0">Zone</tspan>
+  </text>
+</svg>

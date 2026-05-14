@@ -1,0 +1,677 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  margin: 0;
+  padding: 16px;
+  background: #f0f2f5;
+  color: #222;
+  line-height: 1.5;
+}
+
+.page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding-bottom: 40px;
+}
+
+/* ── Cards ── */
+.card {
+  background: white;
+  padding: 20px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  margin-bottom: 16px;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #eee;
+}
+header h1 { margin: 0; font-size: 1.4rem; }
+.header-actions { display: flex; gap: 8px; align-items: center; }
+
+/* ── Buttons ── */
+button {
+  padding: 12px 20px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  background: #0066ff;
+  color: white;
+  width: 100%;
+  margin-top: 10px;
+  transition: opacity 0.15s;
+}
+button:hover { opacity: 0.88; }
+
+.btn-secondary {
+  background: white;
+  color: #0066ff;
+  border: 2px solid #0066ff;
+}
+.btn-small  { padding: 6px 14px; font-size: 13px; width: auto; margin: 0; }
+.btn-back   { background: #eee; color: #333; width: auto; padding: 6px 14px; font-size: 14px; margin: 0; }
+.btn-logout { background: #eee; color: #333; width: auto; padding: 6px 14px; font-size: 14px; margin: 0; }
+.btn-link   { background: none; color: #0066ff; padding: 0; font-size: 14px; width: auto; margin-top: 8px; text-decoration: underline; }
+
+/* ── Forms ── */
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 4px; }
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 15px;
+  background: white;
+  font-family: inherit;
+}
+.field input:focus,
+.field select:focus,
+.field textarea:focus { outline: none; border-color: #0066ff; }
+.field-row { display: flex; gap: 12px; }
+.field-row .field { flex: 1; }
+
+/* ── Login screen ── */
+.login-screen {
+  position: fixed;
+  top: 0; right: 0; bottom: 0; left: 0;
+  background: #0b1120;
+  background-image:
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(86,246,200,0.12) 0%, transparent 70%),
+    radial-gradient(ellipse 60% 40% at 80% 110%, rgba(92,208,255,0.08) 0%, transparent 60%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  overflow-y: auto;
+}
+
+.login-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 36px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.login-logo svg { display: block; }
+.login-brand-name {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+  gap: 3px;
+}
+.lbn-my       { font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(255,255,255,0.45); }
+.lbn-wordmark { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; }
+.lbn-pace     { color: #ffffff; }
+.lbn-zone     { color: #56f6c8; }
+
+.login-tagline {
+  font-size: 15px;
+  color: rgba(255,255,255,0.45);
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+
+.login-card {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.1);
+  backdrop-filter: blur(12px);
+  padding: 32px 28px;
+  border-radius: 20px;
+  width: 100%;
+  max-width: 380px;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+}
+
+.login-card .field label {
+  color: rgba(255,255,255,0.6);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.login-card .field input,
+.login-card .field select,
+.login-card .field textarea {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: #fff;
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 15px;
+}
+
+.login-card .field input::placeholder { color: rgba(255,255,255,0.3); }
+
+.login-card .field input:focus,
+.login-card .field select:focus {
+  outline: none;
+  border-color: #56f6c8;
+  box-shadow: 0 0 0 3px rgba(86,246,200,0.15);
+}
+
+.btn-signin {
+  width: 100%;
+  padding: 14px;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(90deg, #56f6c8 0%, #5cd0ff 100%);
+  color: #0b1120;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: opacity 0.15s;
+}
+.btn-signin:hover { opacity: 0.88; }
+
+.login-card .link-row {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin-top: 16px;
+}
+
+.login-card .btn-link {
+  color: rgba(255,255,255,0.45);
+  font-size: 13px;
+  text-decoration: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  width: auto;
+  margin: 0;
+}
+.login-card .btn-link:hover { color: rgba(255,255,255,0.75); text-decoration: underline; }
+
+.login-card .error-banner {
+  background: rgba(198,40,40,0.2);
+  border: 1px solid rgba(198,40,40,0.4);
+  color: #ff8a80;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+
+/* ── Login page (legacy wrapper for sub-pages like forgot/request) ── */
+.login-page {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.1);
+  padding: 32px 28px;
+  border-radius: 20px;
+  width: 100%;
+  max-width: 380px;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+  color: #fff;
+}
+.login-page h1 { margin-bottom: 6px; color: #fff; }
+.login-page p  { color: rgba(255,255,255,0.55); margin-bottom: 20px; }
+.login-page .field label { color: rgba(255,255,255,0.6); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.login-page .field input, .login-page .field select { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14); color: #fff; }
+.login-page .field input::placeholder { color: rgba(255,255,255,0.3); }
+.login-page .field input:focus { outline: none; border-color: #56f6c8; box-shadow: 0 0 0 3px rgba(86,246,200,0.15); }
+.login-page .btn { background: linear-gradient(90deg,#56f6c8,#5cd0ff); color: #0b1120; font-weight: 700; }
+.login-page .btn-back { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7); }
+.login-page .btn-link { background: none; color: rgba(255,255,255,0.5); text-decoration: underline; font-size: 13px; width: auto; padding: 0; margin-top: 8px; }
+.login-page .error-banner { background: rgba(198,40,40,0.2); border: 1px solid rgba(198,40,40,0.4); color: #ff8a80; }
+
+/* ── Setup pages ── */
+.setup-page {
+  background: white;
+  padding: 24px;
+  border-radius: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  margin-bottom: 16px;
+}
+.setup-page h2 { margin-bottom: 6px; }
+.setup-page > p { color: #555; margin-bottom: 20px; }
+
+.step-indicator {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ── HR Zones ── */
+.zone-bar {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f9f9f9;
+  margin-bottom: 8px;
+  border-left: 4px solid transparent;
+}
+.zone-bar.z1 { border-left-color: #4CAF50; }
+.zone-bar.z2 { border-left-color: #FF9800; }
+.zone-bar.z3 { border-left-color: #F44336; }
+.zone-bar-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 700;
+  margin-bottom: 3px;
+}
+.zone-bar-label .zone-name { font-size: 15px; }
+.zone-bar-label .zone-range { font-size: 14px; color: #555; }
+.zone-bar p { margin: 0; font-size: 13px; color: #666; }
+.zone-method { font-size: 12px; color: #aaa; margin-bottom: 12px; font-style: italic; }
+
+/* ── Stats ── */
+.stat-row { display: flex; gap: 10px; margin: 12px 0; }
+.stat-box {
+  flex: 1;
+  background: #f5f7ff;
+  border-radius: 10px;
+  padding: 12px 8px;
+  text-align: center;
+}
+.stat-value { display: block; font-size: 1.1rem; font-weight: 700; color: #0066ff; }
+.stat-label { display: block; font-size: 11px; color: #888; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.4px; }
+
+/* ── Prediction & Goal ── */
+.prediction-box {
+  background: #f5f7ff;
+  border-radius: 10px;
+  padding: 14px;
+  margin-top: 12px;
+}
+.prediction-box p { margin: 5px 0; font-size: 14px; }
+.prediction-box .pred-main { font-size: 16px; font-weight: 700; color: #0066ff; }
+.prediction-box .pred-source { font-size: 12px; color: #888; margin-top: 2px; }
+
+.goal-status {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.goal-status.achievable { background: #e8f5e9; color: #2e7d32; border-left: 3px solid #4CAF50; }
+.goal-status.stretch    { background: #fff8e1; color: #f57f17; border-left: 3px solid #FF9800; }
+.goal-status.aggressive { background: #fff3e0; color: #e65100; border-left: 3px solid #FF5722; }
+.goal-status.unsafe     { background: #ffebee; color: #c62828; border-left: 3px solid #F44336; }
+
+/* ── Week Plan (compact dashboard) ── */
+.week-plan { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.day-slot {
+  flex: 1;
+  min-width: 72px;
+  background: #f5f7ff;
+  border-radius: 8px;
+  padding: 8px 6px;
+  text-align: center;
+  font-size: 12px;
+}
+.day-slot.rest { background: #f5f5f5; color: #bbb; }
+.day-slot strong { display: block; margin-bottom: 3px; font-size: 13px; color: #333; }
+.day-type { display: block; font-weight: 600; color: #0066ff; margin-bottom: 2px; }
+.day-slot.rest .day-type { color: #bbb; }
+.day-zone  { display: block; font-size: 11px; color: #888; }
+
+/* ── Week Plan (full plan page) ── */
+.plan-day {
+  padding: 14px 16px;
+  background: #f9f9f9;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plan-day.rest { opacity: 0.45; }
+.plan-day .day-name { font-weight: 700; font-size: 15px; }
+.plan-day .day-type-full { font-weight: 600; color: #0066ff; }
+.plan-day .day-zone-full { font-size: 13px; color: #888; }
+.plan-day .day-notes { font-size: 13px; color: #555; }
+
+/* ── Workout log ── */
+.workout-list { display: flex; flex-direction: column; gap: 12px; }
+.workout-card {
+  background: white;
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+}
+.workout-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.workout-header .workout-date { font-size: 15px; }
+.workout-header .workout-type-tag { font-size: 11px; font-weight: 600; color: #4f6ef7; background: #eef0ff; border-radius: 999px; padding: 2px 8px; }
+.workout-header .workout-dist { font-size: 14px; color: #555; }
+.workout-details { display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px; color: #555; }
+.workout-details span { display: flex; align-items: center; gap: 4px; }
+.workout-notes { font-size: 13px; color: #777; margin-top: 8px; font-style: italic; }
+
+/* ── Menu ── */
+.menu { display: flex; flex-direction: column; gap: 8px; }
+.menu button { margin-top: 0; }
+
+/* ── Banners ── */
+.banner {
+  padding: 12px 16px;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.banner-warning { background: #fff3e0; color: #b64500; border-left: 4px solid #FF9800; }
+.banner-info    { background: #e3f2fd; color: #0d47a1; border-left: 4px solid #2196F3; }
+.banner a, .banner .banner-link { color: inherit; font-weight: 700; cursor: pointer; text-decoration: underline; }
+
+/* ── Command Center ── */
+.user-cards { display: flex; flex-direction: column; gap: 14px; }
+.user-card {
+  background: white;
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+.user-card.empty { opacity: 0.5; padding: 14px; }
+.user-card h3 { margin: 0 0 12px; font-size: 1.05rem; }
+.user-card p  { margin: 4px 0; font-size: 14px; }
+.flag {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: #fff3e0;
+  color: #b64500;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* ── Misc ── */
+h1, h2, h3 { margin-top: 0; }
+h2 { font-size: 1.1rem; margin-bottom: 12px; }
+h3 { font-size: 1rem; margin-bottom: 8px; }
+p  { margin-top: 0; }
+ol li { margin-bottom: 6px; }
+
+.loading { text-align: center; padding: 80px 20px; color: #aaa; font-size: 1.1rem; }
+.error   { text-align: center; padding: 40px 20px; color: #c62828; background: white; border-radius: 12px; }
+
+.link-row { text-align: center; margin-top: 14px; }
+.phase-note { font-size: 13px; color: #777; font-style: italic; margin-bottom: 14px; }
+
+/* ── Pending requests (Command Center) ── */
+.pending-list { display: flex; flex-direction: column; gap: 12px; }
+.pending-request {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  background: #fffbf0;
+  border: 1px solid #ffe082;
+  border-radius: 10px;
+  padding: 14px;
+}
+.pending-info { flex: 1; }
+.pending-info strong { font-size: 15px; display: block; margin-bottom: 4px; }
+.pending-info p { margin: 2px 0; font-size: 13px; color: #555; }
+.pending-date { font-size: 12px; color: #999; margin-top: 4px; display: block; }
+.pending-actions { display: flex; flex-direction: column; gap: 6px; min-width: 100px; }
+.btn-approve { background: #2e7d32; color: white; padding: 8px 12px; font-size: 13px; width: auto; margin: 0; border-radius: 6px; }
+.btn-approve:hover { background: #1b5e20; }
+.btn-reject  { background: #c62828; color: white; padding: 8px 12px; font-size: 13px; width: auto; margin: 0; border-radius: 6px; }
+.btn-reject:hover  { background: #b71c1c; }
+.btn-delete  { background: none; color: #c62828; border: 1px solid #c62828; padding: 6px 12px; font-size: 12px; width: auto; border-radius: 6px; }
+.btn-delete:hover  { background: #c62828; color: white; }
+.card-admin-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.pending-email  { display: block; font-size: 12px; color: #555; margin-top: 2px; }
+.pending-source { display: inline-block; font-size: 11px; color: #fff; background: #4f6ef7; border-radius: 999px; padding: 1px 7px; margin-left: 6px; }
+.pending-no-pw  { font-size: 12px; color: #b64500; font-style: italic; }
+
+/* ── Dashboard two-column grid ── */
+.dashboard-grid { display: flex; flex-direction: column; }
+.dash-col { display: flex; flex-direction: column; }
+
+/* ── Today's workout card ── */
+.today-card { border-left: 4px solid #0066ff; }
+.today-rest { color: #888; font-style: italic; padding: 8px 0; }
+.today-workout { display: flex; flex-direction: column; gap: 6px; }
+.today-run-type { font-size: 1.1rem; font-weight: 700; color: #0066ff; }
+.today-run-zone { font-size: 13px; color: #555; }
+.today-run-duration { font-size: 14px; font-weight: 600; color: #333; }
+.today-run-instructions { font-size: 13px; color: #555; line-height: 1.5; padding: 8px 12px; background: #f5f7ff; border-radius: 8px; }
+.btn-log-today { margin-top: 4px; background: #0066ff; color: white; padding: 10px; font-size: 14px; font-weight: 700; width: 100%; border-radius: 8px; }
+.cutback-badge { display: inline-block; background: #fff3e0; color: #b64500; border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700; margin-bottom: 10px; }
+.today-complete { display: flex; flex-direction: column; gap: 8px; }
+.today-complete-header { font-size: 13px; font-weight: 700; color: #2e7d32; letter-spacing: 0.05em; }
+.today-complete-type { font-size: 1.1rem; font-weight: 700; color: #333; }
+.today-complete-stats { display: flex; flex-wrap: wrap; gap: 12px; font-size: 14px; color: #444; padding: 10px 12px; background: #f0faf2; border-radius: 8px; }
+.today-complete-notes { font-size: 13px; color: #777; font-style: italic; }
+.btn-sm { padding: 7px 14px; font-size: 13px; width: auto; margin-top: 4px; }
+
+/* ── Plan view picker ── */
+.plan-view-picker { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+
+/* ── Progress chart ── */
+.chart-scroll { overflow-x: auto; padding-bottom: 4px; }
+.chart-container { display: flex; gap: 4px; align-items: flex-end; height: 200px; padding-bottom: 28px; min-width: max-content; }
+.chart-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; width: 30px; height: 100%; }
+.bar-mins { font-size: 8px; color: #888; margin-bottom: 2px; }
+.chart-bar { width: 100%; border-radius: 3px 3px 0 0; background: #4CAF50; }
+.chart-bar.cutback-bar { background: #FF9800; }
+.chart-bar.current-bar { background: #0066ff; }
+.bar-week { font-size: 9px; color: #aaa; margin-top: 4px; }
+
+/* ── Plan calendar ── */
+.plan-calendar { display: flex; flex-direction: column; gap: 6px; }
+.plan-week { background: #f9f9f9; border-radius: 8px; padding: 8px 10px; }
+.plan-week.current-week { background: #dbeafe; border: 2px solid #0066ff; }
+.plan-week.cutback-week { background: #fff8e1; }
+.plan-week-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; flex-wrap: wrap; }
+.plan-week-num { font-weight: 700; font-size: 13px; }
+.plan-week-date { color: #999; }
+.plan-tag { border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: 700; }
+.current-tag { background: #0066ff; color: white; }
+.cutback-tag { background: #FF9800; color: white; }
+.plan-week-days { display: flex; gap: 3px; }
+.plan-day-cell { flex: 1; border-radius: 5px; padding: 5px 2px; text-align: center; }
+.plan-day-cell.rest    { background: #efefef; }
+.plan-day-cell.easy    { background: #c8e6c9; }
+.plan-day-cell.fartlek { background: #ffe0b2; }
+.plan-day-cell.quality { background: #ffccbc; color: #bf360c; }
+.plan-day-cell.cross   { background: #e1bee7; }
+.plan-day-cell.long    { background: #1565C0; color: white; }
+
+.plan-phase-tag { font-size: 10px; color: #aaa; font-style: italic; }
+.plan-cell-day  { display: block; font-size: 9px; font-weight: 700; margin-bottom: 2px; }
+.plan-cell-type { display: block; font-size: 9px; line-height: 1.3; white-space: pre-line; }
+
+/* ── Day duration label ── */
+.day-duration { display: block; font-size: 11px; color: #888; margin-top: 2px; }
+
+/* ── Today highlight in week grid ── */
+.day-slot.today { background: #dbeafe; border: 2px solid #0066ff; }
+.day-slot.today .day-type { color: #0044cc; }
+
+/* ── Desktop two-column layout ── */
+@media (min-width: 768px) {
+  .page { max-width: 980px; }
+  .dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 16px;
+    align-items: start;
+  }
+}
+
+/* ── Edit workout button ── */
+.btn-edit-workout {
+  background: none;
+  color: #0066ff;
+  border: 1px solid #0066ff;
+  padding: 3px 10px;
+  font-size: 12px;
+  width: auto;
+  margin: 0;
+  border-radius: 6px;
+}
+
+/* ── Mood picker ── */
+.mood-picker-wrap { margin-bottom: 14px; }
+.mood-picker-label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 8px; }
+.mood-picker { display: flex; gap: 8px; flex-wrap: wrap; }
+.mood-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 2px solid #e0e0e0;
+  border-radius: 10px;
+  cursor: pointer;
+  background: #fafafa;
+  min-width: 60px;
+  transition: border-color 0.15s, background 0.15s;
+  user-select: none;
+}
+.mood-btn:hover { border-color: #aaa; background: #f0f0f0; }
+.mood-btn.selected { border-color: #0066ff; background: #eef2ff; }
+.mood-emoji { font-size: 1.6rem; line-height: 1; }
+.mood-label { font-size: 11px; font-weight: 600; color: #555; }
+.mood-btn.selected .mood-label { color: #0066ff; }
+
+/* ── Mood tag on workout history ── */
+.workout-mood { margin-top: 6px; }
+.mood-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f0f0f0;
+  color: #444;
+}
+.mood-changed-flag { font-size: 11px; color: #b64500; margin-left: 8px; font-style: italic; }
+
+/* ── Group card (dashboard) ── */
+.group-card { border-left: 4px solid #7c3aed; }
+.group-members { display: flex; flex-direction: column; gap: 14px; margin-top: 10px; }
+.group-member { padding: 10px 12px; background: #faf5ff; border-radius: 8px; }
+.group-member-name { display: block; font-size: 14px; margin-bottom: 6px; color: #333; }
+.group-workout-rows { display: flex; flex-direction: column; gap: 4px; }
+.group-workout-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #555;
+  padding: 4px 0;
+  border-bottom: 1px solid #ede9fe;
+}
+.group-workout-row:last-child { border-bottom: none; }
+.gw-date { color: #888; min-width: 72px; }
+.gw-type { font-weight: 600; color: #7c3aed; }
+.gw-dist { color: #333; }
+.gw-dur  { color: #555; }
+.gw-mood { font-size: 14px; }
+
+/* ── Admin workout list (Command Center) ── */
+.admin-workout-list {
+  margin-top: 10px;
+  border-top: 1px solid #eee;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.admin-workout-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #555;
+  padding: 4px 6px;
+  background: #f9f9f9;
+  border-radius: 5px;
+}
+.awr-date  { color: #888; min-width: 72px; }
+.awr-type  { font-weight: 600; color: #333; }
+.awr-dist  { color: #0066ff; }
+.awr-dur   { color: #555; }
+.awr-mood  { font-size: 14px; }
+.awr-mood-flag { font-size: 11px; color: #b64500; font-style: italic; }
+
+/* ── Groups section (Command Center) ── */
+.cc-section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.cc-section-head h2 { margin: 0; }
+.group-admin-list { display: flex; flex-direction: column; gap: 8px; }
+.group-admin-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #f5f0ff;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.group-admin-row strong { font-size: 14px; color: #333; }
+.group-member-count { color: #7c3aed; font-weight: 600; white-space: nowrap; }
+.group-member-names { color: #666; font-style: italic; }
+.athlete-group-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #ede9fe;
+  color: #7c3aed;
+  margin-bottom: 8px;
+}
+.athlete-group-tag.no-group { background: #f0f0f0; color: #aaa; }
+
+/* ── Mood adaptation card (dashboard) ── */
+.mood-adaptation-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  border-left: 4px solid;
+}
+.mood-adapt-proceed  { background: #e8f5e9; border-color: #4CAF50; color: #1b5e20; }
+.mood-adapt-hold     { background: #fff8e1; border-color: #FF9800; color: #7a4a00; }
+.mood-adapt-recovery { background: #fce4ec; border-color: #E91E63; color: #880e4f; }
+.mood-adapt-emoji { font-size: 2rem; line-height: 1; flex-shrink: 0; }
+.mood-adapt-body strong { display: block; font-size: 13px; margin-bottom: 4px; }
+.mood-adapt-body p { margin: 0; font-size: 13px; line-height: 1.5; }
+
+/* ── Mobile ── */
+@media (max-width: 480px) {
+  .stat-row { flex-wrap: wrap; }
+  .stat-box { min-width: 80px; }
+  .week-plan { gap: 4px; }
+  .day-slot { min-width: 40px; padding: 6px 4px; font-size: 11px; }
+}
