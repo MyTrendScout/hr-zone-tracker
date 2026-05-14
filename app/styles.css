@@ -668,10 +668,206 @@ ol li { margin-bottom: 6px; }
 .mood-adapt-body strong { display: block; font-size: 13px; margin-bottom: 4px; }
 .mood-adapt-body p { margin: 0; font-size: 13px; line-height: 1.5; }
 
+/* ── Splits & Strava source tag ── */
+.workout-splits {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.splits-label { font-weight: 600; color: #888; }
+.splits-values { color: #555; }
+.strava-source-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  color: #FC4C02;
+  margin-top: 4px;
+  letter-spacing: 0.04em;
+}
+
+/* ── Strava ── */
+.strava-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #eee;
+}
+.strava-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #999;
+  margin: 0 0 10px;
+}
+.btn-strava-connect {
+  display: inline-flex;
+  align-items: center;
+  background: #FC4C02;
+  color: white;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 11px 18px;
+  border-radius: 8px;
+  text-decoration: none;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  width: 100%;
+  justify-content: center;
+  box-sizing: border-box;
+}
+.btn-strava-connect:hover { opacity: 0.88; }
+
+.strava-connected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f0faf4;
+  border: 1px solid #b7e4c7;
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.strava-connected-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1b5e20;
+}
+.strava-dot {
+  width: 8px; height: 8px;
+  background: #4CAF50;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.strava-connected-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.btn-strava-sync {
+  background: #FC4C02;
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  width: auto;
+  margin: 0;
+}
+.btn-strava-sync:hover { opacity: 0.88; }
+.btn-strava-disconnect {
+  font-size: 12px !important;
+  color: #999 !important;
+  margin: 0 !important;
+}
+
+/* ── Strava Import Page ── */
+.strava-import-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.strava-import-count {
+  font-size: 14px;
+  font-weight: 600;
+  color: #444;
+  margin: 0;
+}
+.btn-strava-import-all {
+  background: #FC4C02;
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  width: auto;
+  margin: 0;
+  white-space: nowrap;
+}
+.btn-strava-import-all:hover { opacity: 0.88; }
+
+.strava-activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.strava-activity-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: #f9f9f9;
+  border-radius: 10px;
+  border: 1px solid #eee;
+  gap: 12px;
+}
+.strava-already-imported {
+  opacity: 0.5;
+}
+.strava-activity-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.strava-activity-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #222;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.strava-activity-date {
+  font-size: 12px;
+  color: #999;
+}
+.strava-activity-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 13px;
+  color: #555;
+  flex-wrap: wrap;
+}
+.strava-imported-badge {
+  font-size: 12px;
+  font-weight: 700;
+  color: #4CAF50;
+  white-space: nowrap;
+}
+.btn-strava-import-one {
+  background: #FC4C02;
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  width: auto;
+  margin: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.btn-strava-import-one:hover { opacity: 0.88; }
+
 /* ── Mobile ── */
 @media (max-width: 480px) {
   .stat-row { flex-wrap: wrap; }
   .stat-box { min-width: 80px; }
   .week-plan { gap: 4px; }
   .day-slot { min-width: 40px; padding: 6px 4px; font-size: 11px; }
+  .strava-import-header { flex-direction: column; align-items: flex-start; gap: 10px; }
 }

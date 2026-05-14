@@ -14,6 +14,17 @@ try {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// STRAVA CONFIG  — fill in your Client ID and Secret from
+//                  strava.com/settings/api after registering the app
+// ═══════════════════════════════════════════════════════════════
+const STRAVA = {
+  clientId:    "245325",
+  clientSecret:"e6b2fde025f498e2322e86e47ac5bb56feb3e5f9",
+  redirectUri: "https://mypacezone.com/app/",
+  scope:       "activity:read_all"
+};
+
+// ═══════════════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════════════
 let planViewMode = null; // "calendar" or "chart" — persists during session
@@ -28,20 +39,23 @@ const MOODS = [
 ];
 
 let state = {
-  user:            null,
-  profile:         null,
-  zones:           null,
-  goal:            null,
-  workouts:        [],
-  allUsers:        null,
-  pendingRequests: [],
-  pendingCount:    0,
-  editingWorkout:  null,
-  groupData:       null,
-  adminGroups:     [],
-  view:            "login",
-  loading:         false,
-  error:           null
+  user:              null,
+  profile:           null,
+  zones:             null,
+  goal:              null,
+  workouts:          [],
+  allUsers:          null,
+  pendingRequests:   [],
+  pendingCount:      0,
+  editingWorkout:    null,
+  groupData:         null,
+  adminGroups:       [],
+  stravaTokens:      null,   // { accessToken, refreshToken, expiresAt, athleteId }
+  stravaActivities:  null,   // fetched runs pending import
+  stravaLoading:     false,
+  view:              "login",
+  loading:           false,
+  error:             null
 };
 
 function setState(updates) {
@@ -65,17 +79,19 @@ function userDoc(userId) {
 }
 
 async function loadUserData(userId) {
-  const [profileSnap, zonesSnap, goalSnap, workoutsSnap] = await Promise.all([
+  const [profileSnap, zonesSnap, goalSnap, workoutsSnap, userDocSnap] = await Promise.all([
     userDoc(userId).collection("data").doc("profile").get(),
     userDoc(userId).collection("data").doc("zones").get(),
     userDoc(userId).collection("data").doc("goal").get(),
-    userDoc(userId).collection("workouts").orderBy("date", "desc").limit(100).get()
+    userDoc(userId).collection("workouts").orderBy("date", "desc").limit(100).get(),
+    userDoc(userId).get()
   ]);
   return {
-    profile:  profileSnap.exists  ? profileSnap.data()  : null,
-    zones:    zonesSnap.exists    ? zonesSnap.data()    : null,
-    goal:     goalSnap.exists     ? goalSnap.data()     : null,
-    workouts: workoutsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    profile:      profileSnap.exists  ? profileSnap.data()  : null,
+    zones:        zonesSnap.exists    ? zonesSnap.data()    : null,
+    goal:         goalSnap.exists     ? goalSnap.data()     : null,
+    workouts:     workoutsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+    stravaTokens: userDocSnap.exists  ? (userDocSnap.data().stravaTokens || null) : null
   };
 }
 
@@ -124,6 +140,163 @@ async function setAthleteGroup(userId, groupId) {
   }
   // Save groupId on user profile
   await db.collection("users").doc(userId).collection("data").doc("profile").set({ groupId: groupId || null }, { merge: true });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STRAVA HELPERS
+// ═══════════════════════════════════════════════════════════════
+
+function stravaConnectURL() {
+  return `https://www.strava.com/oauth/authorize?client_id=${STRAVA.clientId}` +
+    `&redirect_uri=${encodeURIComponent(STRAVA.redirectUri)}` +
+    `&response_type=code&approval_prompt=auto&scope=${STRAVA.scope}`;
+}
+
+async function stravaExchangeCode(code) {
+  const resp = await fetch("https://www.strava.com/oauth/token", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id:     STRAVA.clientId,
+      client_secret: STRAVA.clientSecret,
+      code,
+      grant_type: "authorization_code"
+    })
+  });
+  return resp.json();
+}
+
+async function stravaRefreshToken(refreshToken) {
+  const resp = await fetch("https://www.strava.com/oauth/token", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id:     STRAVA.clientId,
+      client_secret: STRAVA.clientSecret,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token"
+    })
+  });
+  return resp.json();
+}
+
+async function stravaGetValidToken() {
+  const tokens = state.stravaTokens;
+  if (!tokens) return null;
+  // Token still valid (with 60s buffer)
+  if (Date.now() / 1000 < tokens.expiresAt - 60) return tokens.accessToken;
+  // Refresh
+  try {
+    const data = await stravaRefreshToken(tokens.refreshToken);
+    if (!data.access_token) return null;
+    const newTokens = { ...tokens, accessToken: data.access_token, expiresAt: data.expires_at };
+    await userDoc().set({ stravaTokens: newTokens }, { merge: true });
+    setState({ stravaTokens: newTokens });
+    return newTokens.accessToken;
+  } catch (_) { return null; }
+}
+
+async function stravaSaveTokens(data) {
+  const tokens = {
+    accessToken:  data.access_token,
+    refreshToken: data.refresh_token,
+    expiresAt:    data.expires_at,
+    athleteId:    data.athlete?.id || null
+  };
+  await userDoc().set({ stravaTokens: tokens }, { merge: true });
+  return tokens;
+}
+
+async function stravaDisconnect() {
+  await userDoc().set({ stravaTokens: null }, { merge: true });
+  setState({ stravaTokens: null, stravaActivities: null });
+}
+
+async function fetchStravaActivities() {
+  setState({ stravaLoading: true });
+  try {
+    const token = await stravaGetValidToken();
+    if (!token) { setState({ stravaLoading: false, error: "Strava token invalid. Please reconnect." }); return; }
+    const resp = await fetch(
+      "https://www.strava.com/api/v3/athlete/activities?per_page=30&page=1",
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const all = await resp.json();
+    if (!Array.isArray(all)) { setState({ stravaLoading: false, error: "Strava returned an unexpected response." }); return; }
+    const runs = all.filter(a => a.type === "Run" || a.sport_type === "Run");
+    setState({ stravaActivities: runs, stravaLoading: false, view: "strava-import" });
+  } catch (err) {
+    setState({ stravaLoading: false, error: "Could not fetch Strava activities: " + err.message });
+  }
+}
+
+function stravaToWorkout(activity) {
+  const sportType = activity.sport_type || activity.type || "Run";
+  const durSec    = activity.moving_time || 0;
+  const dateStr   = (activity.start_date_local || "").split("T")[0];
+  const avgHR     = activity.average_heartrate ? Math.round(activity.average_heartrate) : null;
+  const maxHR     = activity.max_heartrate     ? Math.round(activity.max_heartrate)     : null;
+
+  // Map Strava sport type → app type
+  const typeMap = { Run: "Run", Walk: "Walk", Ride: "Bike", VirtualRide: "Bike",
+                    Swim: "Swim", Yoga: "Yoga / Stretch", WeightTraining: "Strength",
+                    Workout: "Strength", Hike: "Walk" };
+  const type = typeMap[sportType] || "Run";
+
+  const base = {
+    date: dateStr, type, durationSec: durSec,
+    avgHR, maxHR, notes: activity.name || "",
+    source: "strava", stravaId: activity.id, loggedAt: new Date().toISOString()
+  };
+
+  if (type === "Swim") {
+    // Strava swim distance is in meters → convert to yards (1m = 1.0936 yd)
+    const distYards = Math.round(activity.distance * 1.0936);
+    const per100    = distYards > 0 ? (durSec / 60) / (distYards / 100) : 0;
+    const pMin      = Math.floor(per100);
+    const pSec      = Math.round((per100 - pMin) * 60);
+    const pace      = distYards > 0 ? `${pMin}:${String(pSec).padStart(2, "0")}` : null;
+    return { ...base, distanceYards: distYards, pace, paceUnit: "min/100yd" };
+  }
+
+  if (type === "Run" || type === "Walk" || type === "Bike") {
+    const distMi      = parseFloat((activity.distance / 1609.344).toFixed(2));
+    const paceDecimal = distMi > 0 ? (durSec / 60) / distMi : 0;
+    const pMin        = Math.floor(paceDecimal);
+    const pSec        = Math.round((paceDecimal - pMin) * 60);
+    const pace        = distMi > 0 ? `${pMin}:${String(pSec).padStart(2, "0")}` : null;
+    const result      = { ...base, distanceMi: distMi, pace, paceUnit: "min/mi" };
+    if (type === "Run" && distMi > 0) {
+      const predictedFinishSec = riegelPredict(durSec, distMi, MARATHON_MI);
+      Object.assign(result, { predictedFinishSec, predictedFinishStr: secsToHMS(predictedFinishSec), predictedPaceStr: predictedPace(predictedFinishSec) + "/mi" });
+    }
+    return result;
+  }
+
+  return base; // Yoga / Strength / Other — time only
+}
+
+// Called on app init — checks URL for ?code= from Strava OAuth redirect
+async function checkStravaCallback() {
+  const params = new URLSearchParams(window.location.search);
+  const code   = params.get("code");
+  const error  = params.get("error");
+  if (!code && !error) return false;
+  // Clean the URL immediately
+  window.history.replaceState({}, "", window.location.pathname);
+  if (error) { setState({ error: "Strava authorization was cancelled." }); return true; }
+  if (!state.user) { setState({ error: "Please log in first, then reconnect Strava." }); return true; }
+  setState({ loading: true });
+  try {
+    const data = await stravaExchangeCode(code);
+    if (!data.access_token) throw new Error(data.message || "Token exchange failed");
+    const tokens = await stravaSaveTokens(data);
+    setState({ stravaTokens: tokens, loading: false });
+    await fetchStravaActivities();
+  } catch (err) {
+    setState({ loading: false, error: "Strava connection failed: " + err.message });
+  }
+  return true;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -235,7 +408,7 @@ function predictedPace(finishSec) {
 
 function getBestPrediction(workouts) {
   // Only use runs of 4+ miles — shorter efforts give wildly inaccurate Riegel projections
-  const valid = workouts.filter(w => w.type !== "Walk" && w.distanceMi >= 4 && w.durationSec > 0);
+  const valid = workouts.filter(w => RUNNING_TYPES.has(w.type) && w.distanceMi >= 4 && w.durationSec > 0);
   if (!valid.length) return null;
   // Pick the workout that produces the fastest (lowest) predicted finish — not just the latest
   let best = null;
@@ -823,6 +996,7 @@ function getView() {
     case "history":        return WorkoutHistory();
     case "plan":           return PlanPage();
     case "test":           return FieldTest();
+    case "strava-import":  return StravaImportPage();
     case "command":        return state.user.admin ? CommandCenter() : Dashboard();
     default:               return Dashboard();
   }
@@ -852,6 +1026,7 @@ function LoginPage() {
         ]);
         const pendingCount = pendingSnap.size || 0;
         setState({ user: ADMIN, ...data, pendingCount, loading: false, error: null, view: data.profile ? "dashboard" : "setup-profile" });
+        checkStravaCallback();
       } catch (err) {
         setState({ loading: false, error: "Could not connect to Firebase: " + err.message });
       }
@@ -888,6 +1063,8 @@ function LoginPage() {
       const data = await loadUserData(doc.id);
       const groupData = data.profile?.groupId ? await loadGroupData(data.profile.groupId, doc.id) : null;
       setState({ user, ...data, groupData, loading: false, error: null, view: data.profile ? "dashboard" : "setup-profile" });
+      // Check for Strava OAuth callback (user may have been redirected here after connecting)
+      checkStravaCallback();
     } catch (err) {
       setState({ loading: false, error: "Could not connect to Firebase: " + err.message });
     }
@@ -1384,6 +1561,27 @@ function Dashboard() {
     )
   ) : null;
 
+  const stravaConnected = !!state.stravaTokens;
+  const stravaBtn = stravaConnected
+    ? div("strava-connected",
+        div("strava-connected-label",
+          div("strava-dot"),
+          el("span", null, "Strava connected")
+        ),
+        div("strava-connected-actions",
+          btn("Sync runs →", fetchStravaActivities, "btn-strava-sync"),
+          btn("Disconnect", stravaDisconnect, "btn-link btn-strava-disconnect")
+        )
+      )
+    : (() => {
+        const b = el("a", {
+          href: stravaConnectURL(),
+          className: "btn-strava-connect"
+        });
+        b.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="white" style="margin-right:8px;vertical-align:middle"><path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169"/></svg>Connect with Strava`;
+        return b;
+      })();
+
   const trackCard = div("card",
     h2("Training"),
     div("menu",
@@ -1392,6 +1590,10 @@ function Dashboard() {
       btn("View Full Training Plan",() => setState({ view: "plan" })),
       btn("Update Fitness Level / Rebuild Plan", () => setState({ view: "update-plan" }), "btn-secondary"),
       btn("Edit Profile & Plan Settings", () => setState({ view: "edit-profile" }), "btn-secondary")
+    ),
+    div("strava-section",
+      el("p", { className: "strava-section-label" }, "Strava"),
+      stravaBtn
     )
   );
 
@@ -1455,54 +1657,172 @@ function Dashboard() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// STRAVA IMPORT PAGE
+// ═══════════════════════════════════════════════════════════════
+function StravaImportPage() {
+  const activities = state.stravaActivities || [];
+  const existingStravaIds = new Set(state.workouts.filter(w => w.stravaId).map(w => String(w.stravaId)));
+
+  const importOne = async (activity) => {
+    const workout = stravaToWorkout(activity);
+    setState({ loading: true });
+    try {
+      await addWorkout(workout);
+      const newWorkouts = [{ id: Date.now().toString(), ...workout }, ...state.workouts];
+      // Remove from pending list
+      const remaining = (state.stravaActivities || []).filter(a => a.id !== activity.id);
+      setState({ workouts: newWorkouts, stravaActivities: remaining, loading: false });
+    } catch (err) {
+      setState({ loading: false, error: "Import failed: " + err.message });
+    }
+  };
+
+  const importAll = async () => {
+    const toImport = activities.filter(a => !existingStravaIds.has(String(a.id)));
+    if (!toImport.length) return;
+    setState({ loading: true });
+    try {
+      await Promise.all(toImport.map(a => addWorkout(stravaToWorkout(a))));
+      // Reload workouts fresh
+      const snap = await userDoc().collection("workouts").orderBy("date", "desc").limit(100).get();
+      const workouts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setState({ workouts, stravaActivities: [], loading: false });
+    } catch (err) {
+      setState({ loading: false, error: "Import failed: " + err.message });
+    }
+  };
+
+  const newRuns = activities.filter(a => !existingStravaIds.has(String(a.id)));
+  const alreadyIn = activities.filter(a => existingStravaIds.has(String(a.id)));
+
+  return div("page",
+    div("card",
+      pageHeader("Import from Strava", () => setState({ view: "dashboard" })),
+      state.stravaLoading
+        ? p("Fetching your Strava runs…")
+        : activities.length === 0
+          ? div(null,
+              p("No runs found in your last 30 Strava activities."),
+              btn("Back to Dashboard", () => setState({ view: "dashboard" }))
+            )
+          : div(null,
+              errorBanner(),
+              newRuns.length > 0
+                ? div("strava-import-header",
+                    el("p", { className: "strava-import-count" },
+                      `${newRuns.length} new run${newRuns.length !== 1 ? "s" : ""} ready to import`
+                    ),
+                    btn(`Import All (${newRuns.length})`, importAll, "btn-strava-import-all")
+                  )
+                : p("All recent Strava runs are already in your log."),
+
+              div("strava-activity-list",
+                activities.map(activity => {
+                  const alreadyImported = existingStravaIds.has(String(activity.id));
+                  const distMi  = (activity.distance / 1609.344).toFixed(2);
+                  const durMin  = Math.round((activity.moving_time || 0) / 60);
+                  const hrs     = Math.floor(durMin / 60);
+                  const mins    = durMin % 60;
+                  const durStr  = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+                  const dateStr = (activity.start_date_local || "").split("T")[0];
+                  const hr      = activity.average_heartrate ? `♥ ${Math.round(activity.average_heartrate)} bpm` : null;
+
+                  return div(`strava-activity-row${alreadyImported ? " strava-already-imported" : ""}`,
+                    div("strava-activity-info",
+                      el("span", { className: "strava-activity-name" }, activity.name || "Run"),
+                      el("span", { className: "strava-activity-date" }, dateStr),
+                      div("strava-activity-stats",
+                        el("span", null, `📍 ${distMi} mi`),
+                        el("span", null, `⏱ ${durStr}`),
+                        hr ? el("span", null, hr) : null
+                      )
+                    ),
+                    alreadyImported
+                      ? el("span", { className: "strava-imported-badge" }, "✓ In log")
+                      : btn("Import", () => importOne(activity), "btn-strava-import-one")
+                  );
+                })
+              )
+            )
+    )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // LOG WORKOUT
 // ═══════════════════════════════════════════════════════════════
 const WORKOUT_TYPES = [
   "Run",
   "Walk",
-  "Easy Bike / Swim",
+  "Bike",
+  "Swim",
   "Yoga / Stretch",
   "Strength",
   "Other"
 ];
-const RUNNING_TYPES = new Set(["Run"]);
+const DISTANCE_TYPES = new Set(["Run", "Walk", "Bike", "Swim", "Other"]);
+const RUNNING_TYPES  = new Set(["Run"]);  // only runs feed Riegel prediction
+const SWIM_TYPE      = "Swim";
 
 function LogWorkout() {
-  const editing = state.editingWorkout;
+  const editing  = state.editingWorkout;
   const backDest = editing ? "history" : "dashboard";
   let selectedMood = editing?.mood || null;
 
+  // ── helpers ──────────────────────────────────────────────────
+  function calcSwimPace(durationSec, distYards) {
+    if (!distYards || distYards <= 0) return null;
+    const per100 = (durationSec / 60) / (distYards / 100);
+    const m = Math.floor(per100);
+    const s = Math.round((per100 - m) * 60);
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
   const save = async () => {
-    const date       = document.getElementById("w-date")?.value;
-    const type       = document.getElementById("w-type")?.value || "Run";
-    const distanceMi = parseFloat(document.getElementById("w-dist")?.value) || null;
-    const durStr     = document.getElementById("w-dur")?.value.trim();
-    const avgHR      = parseInt(document.getElementById("w-hr")?.value) || null;
-    const paceInput  = document.getElementById("w-pace")?.value.trim();
-    const notes      = document.getElementById("w-notes")?.value.trim();
-    const weightLbs  = parseFloat(document.getElementById("w-weight")?.value) || null;
+    const date      = document.getElementById("w-date")?.value;
+    const type      = document.getElementById("w-type")?.value || "Run";
+    const durStr    = document.getElementById("w-dur")?.value.trim();
+    const avgHR     = parseInt(document.getElementById("w-hr")?.value)    || null;
+    const maxHR     = parseInt(document.getElementById("w-maxhr")?.value) || null;
+    const paceInput = document.getElementById("w-pace")?.value?.trim()    || null;
+    const splitsRaw = document.getElementById("w-splits")?.value?.trim()  || null;
+    const notes     = document.getElementById("w-notes")?.value.trim();
+    const weightLbs = parseFloat(document.getElementById("w-weight")?.value) || null;
 
-    const isRun = RUNNING_TYPES.has(type);
+    const isSwim    = type === SWIM_TYPE;
+    const needsDist = DISTANCE_TYPES.has(type);
+    const distRaw   = parseFloat(document.getElementById("w-dist")?.value) || null;
 
-    if (!date)                                     { showError("Please enter the date."); return; }
-    if (isRun && (!distanceMi || distanceMi <= 0)) { showError("Please enter a valid distance."); return; }
-    if (!durStr)                                   { showError("Please enter the duration."); return; }
-    if (!selectedMood)                             { showError("Please select how you felt about this workout."); return; }
+    if (!date)        { showError("Please enter the date."); return; }
+    if (!durStr)      { showError("Please enter the duration."); return; }
+    if (needsDist && !distRaw) { showError(`Please enter a distance (${isSwim ? "yards" : "miles"}).`); return; }
+    if (!selectedMood){ showError("Please select how you felt about this workout."); return; }
+
     const durationSec = parseDuration(durStr);
     if (!durationSec) { showError("Enter duration as M:SS (e.g. 54:30) or H:MM:SS (e.g. 1:32:00)."); return; }
 
     let workout = {
-      date, type, durationSec, avgHR: avgHR || null, notes: notes || "", weightLbs,
-      mood: selectedMood,
-      moodOriginal: editing ? (editing.moodOriginal || selectedMood) : selectedMood
+      date, type, durationSec,
+      avgHR:    avgHR  || null,
+      maxHR:    maxHR  || null,
+      notes:    notes  || "",
+      splits:   splitsRaw || null,
+      weightLbs,
+      mood:         selectedMood,
+      moodOriginal: editing ? (editing.moodOriginal || selectedMood) : selectedMood,
+      loggedAt:     editing?.loggedAt || new Date().toISOString()
     };
 
-    if (isRun && distanceMi) {
-      const pace = paceInput || calcPaceStr(durationSec, distanceMi);
-      const predictedFinishSec = riegelPredict(durationSec, distanceMi, MARATHON_MI);
-      Object.assign(workout, { distanceMi, pace, predictedFinishSec, predictedFinishStr: secsToHMS(predictedFinishSec), predictedPaceStr: predictedPace(predictedFinishSec) + "/mi" });
-    } else if (distanceMi) {
-      Object.assign(workout, { distanceMi });
+    if (isSwim && distRaw) {
+      const pace = paceInput || calcSwimPace(durationSec, distRaw);
+      Object.assign(workout, { distanceYards: distRaw, pace, paceUnit: "min/100yd" });
+    } else if (needsDist && distRaw) {
+      const pace = paceInput || calcPaceStr(durationSec, distRaw);
+      Object.assign(workout, { distanceMi: distRaw, pace, paceUnit: "min/mi" });
+      if (RUNNING_TYPES.has(type)) {
+        const predictedFinishSec = riegelPredict(durationSec, distRaw, MARATHON_MI);
+        Object.assign(workout, { predictedFinishSec, predictedFinishStr: secsToHMS(predictedFinishSec), predictedPaceStr: predictedPace(predictedFinishSec) + "/mi" });
+      }
     }
 
     setState({ loading: true });
@@ -1520,7 +1840,7 @@ function LogWorkout() {
     setState({ workouts: data.workouts, goal: updatedGoal, editingWorkout: null, loading: false, view: editing ? "history" : "dashboard", error: null });
   };
 
-  // Mood picker
+  // ── Mood picker ───────────────────────────────────────────────
   const moodBtns = MOODS.map(m => {
     const b = div(`mood-btn${selectedMood === m.key ? " selected" : ""}`,
       el("span", { className: "mood-emoji" }, m.emoji),
@@ -1538,24 +1858,74 @@ function LogWorkout() {
     div("mood-picker", ...moodBtns)
   );
 
-  // Duration pre-fill
-  const durDefault = editing?.durationSec ? secsToHMS(editing.durationSec) : "";
+  // ── Reactive form fields ──────────────────────────────────────
+  const initType     = editing?.type || "Run";
+  const initIsSwim   = initType === SWIM_TYPE;
+  const initNeedDist = DISTANCE_TYPES.has(initType) || initType === "Easy Bike / Swim";
 
-  // Type select with reactive show/hide
-  const initType = editing?.type || "Run";
-  const typeSelect = select("w-type", WORKOUT_TYPES.map(t => [t, t]), initType);
-  const distRow  = field("Distance (miles)", input({ id: "w-dist", type: "number", placeholder: "e.g. 6.2", step: "0.01", min: "0.1", value: editing?.distanceMi || "" }));
-  const paceRow  = field("Pace per mile (M:SS, optional)", input({ id: "w-pace", type: "text", placeholder: "e.g. 9:26 — calculated if blank", value: editing?.pace || "" }));
+  // Pre-fill distance — swim uses yards, others use miles
+  const initDist = initIsSwim
+    ? (editing?.distanceYards || "")
+    : (editing?.distanceMi    || "");
 
-  distRow.style.display = "";
-  paceRow.style.display = RUNNING_TYPES.has(initType) ? "" : "none";
+  // Include legacy "Easy Bike / Swim" type if the workout being edited has it
+  const typeOptions = WORKOUT_TYPES.includes(initType)
+    ? WORKOUT_TYPES
+    : [...WORKOUT_TYPES, initType]; // keep legacy type selectable during edit
+  const typeSelect = select("w-type", typeOptions.map(t => [t, t]), initType);
+
+  // Distance row — label + input both update on type change
+  const distLabel = el("label", { htmlFor: "w-dist" }, initIsSwim ? "Distance (yards) *" : "Distance (miles) *");
+  const distInput = input({ id: "w-dist", type: "number", step: "0.01", min: "0",
+    placeholder: initIsSwim ? "e.g. 1500" : "e.g. 6.2",
+    value: initDist });
+  const distRow = div("field", distLabel, distInput);
+  distRow.style.display = initNeedDist ? "" : "none";
+
+  // Pace row — label updates on type change
+  const paceLabel = el("label", { htmlFor: "w-pace" },
+    initIsSwim ? "Pace per 100 yds (M:SS, optional)" : "Pace per mile (M:SS, optional)");
+  const paceInput = input({ id: "w-pace", type: "text",
+    placeholder: initIsSwim ? "e.g. 2:05 — calculated if blank" : "e.g. 9:26 — calculated if blank",
+    value: editing?.pace || "" });
+  const paceRow = div("field", paceLabel, paceInput);
+  const paceTypes = new Set(["Run", "Walk", "Bike", "Swim"]);
+  paceRow.style.display = paceTypes.has(initType) ? "" : "none";
+
+  // Splits row — label updates on type change
+  const splitsLabel = el("label", { htmlFor: "w-splits" },
+    initIsSwim ? "Splits per 100 yds (optional)" : "Splits per mile (optional)");
+  const splitsInput = input({ id: "w-splits", type: "text",
+    placeholder: initIsSwim ? "e.g. 2:05, 2:10, 2:08" : "e.g. 9:10, 9:25, 9:05",
+    value: editing?.splits || "" });
+  const splitsRow = div("field", splitsLabel, splitsInput);
+  splitsRow.style.display = paceTypes.has(initType) ? "" : "none";
+
   typeSelect.addEventListener("change", () => {
-    const isRun = RUNNING_TYPES.has(typeSelect.value);
-    distRow.style.display = "";
-    paceRow.style.display = isRun ? "" : "none";
+    const t      = typeSelect.value;
+    const isSwim = t === SWIM_TYPE;
+    const needDist = DISTANCE_TYPES.has(t);
+    const hasPace  = paceTypes.has(t);
+
+    distRow.style.display   = needDist ? "" : "none";
+    paceRow.style.display   = hasPace  ? "" : "none";
+    splitsRow.style.display = hasPace  ? "" : "none";
+
+    distLabel.textContent  = isSwim ? "Distance (yards) *"           : "Distance (miles) *";
+    distInput.placeholder  = isSwim ? "e.g. 1500"                    : "e.g. 6.2";
+    paceLabel.textContent  = isSwim ? "Pace per 100 yds (M:SS, optional)" : "Pace per mile (M:SS, optional)";
+    paceInput.placeholder  = isSwim ? "e.g. 2:05 — calculated if blank"   : "e.g. 9:26 — calculated if blank";
+    splitsLabel.textContent = isSwim ? "Splits per 100 yds (optional)" : "Splits per mile (optional)";
+    splitsInput.placeholder = isSwim ? "e.g. 2:05, 2:10, 2:08"         : "e.g. 9:10, 9:25, 9:05";
+
+    // Clear distance on type switch to avoid unit confusion
+    distInput.value = "";
+    paceInput.value = "";
+    splitsInput.value = "";
   });
 
-  const title  = editing ? "Edit Workout" : "Log a Workout";
+  const durDefault = editing?.durationSec ? secsToHMS(editing.durationSec) : "";
+  const title   = editing ? "Edit Workout" : "Log a Workout";
   const saveLbl = editing ? "Update Workout" : "Save Workout";
 
   return div("page",
@@ -1563,12 +1933,16 @@ function LogWorkout() {
       pageHeader(title, () => setState({ editingWorkout: null, view: backDest })),
       editing ? div("banner banner-info", `Editing workout from ${editing.date} — changes replace the original.`) : null,
       errorBanner(),
-      field("Date *", input({ id: "w-date", type: "date", value: editing?.date || new Date().toISOString().split("T")[0] })),
-      field("Activity type *", typeSelect),
+      field("Date *",            input({ id: "w-date",   type: "date",   value: editing?.date || new Date().toISOString().split("T")[0] })),
+      field("Activity type *",   typeSelect),
       distRow,
       field("Duration * (M:SS or H:MM:SS)", input({ id: "w-dur", type: "text", placeholder: "e.g. 58:30 or 1:02:45", value: durDefault })),
-      field("Average HR (bpm, optional)", input({ id: "w-hr", type: "number", placeholder: "e.g. 142", min: "60", max: "220", value: editing?.avgHR || "" })),
+      div("field-row",
+        field("Avg HR (bpm, optional)", input({ id: "w-hr",    type: "number", placeholder: "e.g. 142", min: "60", max: "220", value: editing?.avgHR || "" })),
+        field("Max HR (bpm, optional)", input({ id: "w-maxhr", type: "number", placeholder: "e.g. 168", min: "60", max: "220", value: editing?.maxHR || "" }))
+      ),
       paceRow,
+      splitsRow,
       field("Weight today (lbs, optional)", input({ id: "w-weight", type: "number", placeholder: "e.g. 162.5", step: "0.1", value: editing?.weightLbs || "" })),
       field("Notes (optional)", input({ id: "w-notes", type: "text", placeholder: "How did it feel?", value: editing?.notes || "" })),
       moodPicker,
@@ -1605,18 +1979,27 @@ function WorkoutHistory() {
                 el("span", { className: "workout-date" }, w.date),
                 el("span", { className: "workout-type-tag" }, w.type || "Run"),
                 el("span", { className: "workout-dist" },
-                  w.distanceMi ? `${w.distanceMi} mi — ${secsToHMS(w.durationSec)}` : secsToHMS(w.durationSec)
+                  w.distanceYards ? `${w.distanceYards} yds — ${secsToHMS(w.durationSec)}` :
+                  w.distanceMi    ? `${w.distanceMi} mi — ${secsToHMS(w.durationSec)}` :
+                  secsToHMS(w.durationSec)
                 ),
                 btn("Edit", () => setState({ editingWorkout: w, view: "log-workout" }), "btn-edit-workout")
               ),
               div("workout-details",
-                w.pace      ? span("⏱ ", w.pace, "/mi")        : null,
-                w.avgHR     ? span("♥ ", w.avgHR, " bpm")      : null,
-                w.weightLbs ? span("⚖️ ", w.weightLbs, " lbs") : null,
-                w.predictedFinishStr ? span("📈 ", w.predictedFinishStr) : null
+                w.pace && w.type === "Swim" ? span("⏱ ", w.pace, "/100 yds") :
+                w.pace                      ? span("⏱ ", w.pace, "/mi")       : null,
+                w.avgHR     ? span("♥ avg ", w.avgHR, " bpm")                 : null,
+                w.maxHR     ? span("♥ max ", w.maxHR, " bpm")                 : null,
+                w.weightLbs ? span("⚖️ ", w.weightLbs, " lbs")                : null,
+                w.predictedFinishStr ? span("📈 ", w.predictedFinishStr)       : null
               ),
+              w.splits ? div("workout-splits",
+                el("span", { className: "splits-label" }, w.type === "Swim" ? "Splits /100 yds:" : "Splits /mi:"),
+                el("span", { className: "splits-values" }, w.splits)
+              ) : null,
               workoutMoodTag(w, false),
-              w.notes ? div("workout-notes", w.notes) : null
+              w.notes ? div("workout-notes", w.notes) : null,
+              w.source === "strava" ? el("span", { className: "strava-source-tag" }, "via Strava") : null
             )
           )
         )
@@ -1852,7 +2235,7 @@ async function approveRequest(docId, requestData) {
       `Hi ${requestData.name},\n\n` +
       `Great news — your beta access to MyPaceZone has been approved!\n\n` +
       `Log in here using the password you chose:\n` +
-      `https://mytrendscout.github.io/hr-zone-tracker/\n\n` +
+      `https://mypacezone.com/app/\n\n` +
       `Once you're in, complete your profile and we'll build your training plan.\n\n` +
       `Welcome to the team!\nJohn`
     );
