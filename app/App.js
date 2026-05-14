@@ -1104,7 +1104,8 @@ function LoginPage() {
       div("link-row",
         btn("Request Access",  () => setState({ view: "request-access",  error: null }), "btn-link"),
         btn("Forgot password", () => setState({ view: "forgot-password", error: null }), "btn-link")
-      )
+      ),
+      el("p", { className: "login-disclaimer" }, "MyPaceZone is a training tool, not medical advice. Consult your doctor before starting any training program.")
     )
   );
 }

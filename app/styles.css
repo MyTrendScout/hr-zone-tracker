@@ -204,6 +204,13 @@ button:hover { opacity: 0.88; }
   margin: 0;
 }
 .login-card .btn-link:hover { color: rgba(255,255,255,0.75); text-decoration: underline; }
+.login-disclaimer {
+  margin-top: 16px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.25);
+  text-align: center;
+  line-height: 1.5;
+}
 
 .login-card .error-banner {
   background: rgba(198,40,40,0.2);
