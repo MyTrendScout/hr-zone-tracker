@@ -1070,7 +1070,10 @@ function LoginPage() {
     }
   };
 
-  const pwInput = input({ id: "pw", type: "password", placeholder: "Enter your password" });
+  const emailInput = input({ id: "login-email", type: "email", placeholder: "Enter your email", autocomplete: "username email" });
+  emailInput.addEventListener("keydown", e => { if (e.key === "Enter") document.getElementById("pw")?.focus(); });
+
+  const pwInput = input({ id: "pw", type: "password", placeholder: "Enter your password", autocomplete: "current-password" });
   pwInput.addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 
   const logoBadge = div("login-logo");
@@ -1095,6 +1098,7 @@ function LoginPage() {
     ),
     div("login-card",
       errorBanner(),
+      div("field", emailInput),
       div("field", pwInput),
       signInBtn,
       div("link-row",
