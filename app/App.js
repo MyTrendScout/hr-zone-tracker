@@ -493,9 +493,14 @@ function yassoTime(goalFinishStr) {
   return `${parts[0]}:${String(parts[1]).padStart(2, "0")}`;
 }
 
-function calcWeekData(fitnessLevel, weeksIn, weeksToRace) {
+function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun) {
   const key   = normalizeFitnessLevel(fitnessLevel);
-  const level = PLAN_LEVELS[key] || PLAN_LEVELS.firstTimer;
+  const level = { ...PLAN_LEVELS[key] || PLAN_LEVELS.firstTimer };
+  // If user told us their comfortable long run, use that as the starting point
+  // but never exceed what the fitness level says is appropriate
+  if (comfortableLongRun && comfortableLongRun > 0) {
+    level.longStart = Math.min(comfortableLongRun, level.longStart);
+  }
   const phase = getPhase(weeksToRace);
 
   // Race week: gentle shakeout
@@ -540,7 +545,7 @@ function getCurrentWeekData(profile) {
   const start       = profile.trainingStart || profile.createdAt;
   const weeksIn     = Math.max(0, Math.floor((Date.now() - new Date(start)) / (7 * 24 * 60 * 60 * 1000)));
   const weeksToRace = profile.raceDate ? weeksUntil(profile.raceDate) : 99;
-  return calcWeekData(profile.fitnessLevel, weeksIn, weeksToRace);
+  return calcWeekData(profile.fitnessLevel, weeksIn, weeksToRace, profile.comfortableLongRun);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1302,11 +1307,12 @@ function SetupPrefs() {
     const fitnessLevel  = document.getElementById("p-level")?.value;
     const longRunDay    = parseInt(document.getElementById("p-lrd")?.value);
     const trainingDays  = parseInt(document.getElementById("p-days")?.value);
+    const comfortableLongRun = parseFloat(document.getElementById("p-clr")?.value) || null;
     if (!raceDate)                        { showError("Please enter your race date."); return; }
     if (new Date(raceDate) <= new Date()) { showError("Race date must be in the future."); return; }
     if (!trainingStart)                   { showError("Please enter your training start date."); return; }
     if (!fitnessLevel)                    { showError("Please select your current fitness level."); return; }
-    const prefs = { raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays };
+    const prefs = { raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays, comfortableLongRun };
     setState({ loading: true });
     await saveData("profile", { ...state.profile, ...prefs });
     setState({ profile: { ...state.profile, ...prefs }, loading: false, view: "setup-goal", error: null });
@@ -1323,6 +1329,9 @@ function SetupPrefs() {
         ["Select your level…", ""],
         ...Object.entries(PLAN_LEVELS).map(([k, v]) => [v.label, k])
       ], "")),
+      field("Longest comfortable run in the last 30 days (miles)",
+        input({ id: "p-clr", type: "number", placeholder: "e.g. 6 — a run that felt good and you could have kept going", min: "1", max: "26", step: "0.5" })
+      ),
       field("Long Run Day", select("p-lrd", DNAMES.map((d, i) => [d, i]), 6)),
       field("Training Days Per Week", select("p-days", [[3,3],[4,4],[5,5],[6,6]].map(([l,v]) => [`${l} days`, v]), 4)),
       btn("Next →", save)
@@ -2070,7 +2079,7 @@ function renderPlanChart(profile, totalWeeks, currentWeekIdx) {
   const maxLong = level.longPeak;
 
   const weeks = Array.from({ length: totalWeeks }, (_, w) => {
-    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w);
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun);
     return { weekNum: w + 1, wd, isCurrent: w === currentWeekIdx };
   });
 
@@ -2099,7 +2108,7 @@ function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
   const startDate    = new Date(profile.trainingStart || profile.createdAt);
 
   const weeks = Array.from({ length: totalWeeks }, (_, w) => {
-    const wd      = calcWeekData(profile.fitnessLevel, w, totalWeeks - w);
+    const wd      = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun);
     const plan    = buildFlexibleWeekPlan(longRunDay, trainingDays, wd, state.zones, state.goal);
     const weekStart = new Date(startDate);
     weekStart.setDate(weekStart.getDate() + w * 7);
