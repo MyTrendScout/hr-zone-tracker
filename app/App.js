@@ -327,14 +327,43 @@ function estimateMaxHR(age) {
   return Math.round(207 - (0.7 * age));
 }
 
+// ── Karvonen-based threshold zone calculation ──────────────────
+// Threshold = 0.81 × (MaxHR - RestingHR) + RestingHR
+// Run zones calculated as % of HRR + RestingHR
+// Bike zones = Run zones - 11 bpm across the board
+// Gap between ZR and Z1 is intentional — not a valid training zone
 function calcZones(maxHR, restingHR) {
-  const hrr = maxHR - restingHR;
-  const z = (lo, hi) => ({ low: Math.round(restingHR + lo * hrr), high: Math.round(restingHR + hi * hrr) });
+  const hrr       = maxHR - restingHR;
+  const threshold = Math.round(0.81 * hrr + restingHR);
+  const r = (lo, hi) => ({ low: Math.round(restingHR + lo * hrr), high: Math.round(restingHR + hi * hrr) });
+
+  // Run zones
+  const runZR = r(0.50, 0.62);
+  const runZ1 = r(0.66, 0.74);
+  const runZ2 = r(0.74, 0.82);
+  const runZ3 = r(0.82, 0.90);
+
+  // Bike zones = run zones - 11 bpm
+  const bikeZR = { low: runZR.low - 11, high: runZR.high - 11 };
+  const bikeZ1 = { low: runZ1.low - 11, high: runZ1.high - 11 };
+  const bikeZ2 = { low: runZ2.low - 11, high: runZ2.high - 11 };
+  const bikeZ3 = { low: runZ3.low - 11, high: runZ3.high - 11 };
+
   return {
-    maxHR, restingHR, hrr,
-    z1: { name: "Recovery", ...z(0.50, 0.65), desc: "Very easy. Full sentences. Warm-up, cool-down, rest days." },
-    z2: { name: "Base",     ...z(0.65, 0.80), desc: "Comfortable. Can talk in sentences. Your aerobic engine." },
-    z3: { name: "Speed",    ...z(0.80, 0.92), desc: "Hard. Few words only. Tempo and threshold work." }
+    maxHR, restingHR, hrr, threshold,
+    // Run zones
+    zr: { name: "Recovery", ...runZR, desc: "Very easy. Full sentences. Warm-up, cool-down, rest days." },
+    z1: { name: "Zone 1",   ...runZ1, desc: "Comfortable. Start here, build through the mile. Your aerobic base." },
+    z2: { name: "Zone 2",   ...runZ2, desc: "Controlled effort. Negative split territory. Aerobic engine building." },
+    z3: { name: "Zone 3",   ...runZ3, desc: "Hard. Few words only. Sub-threshold. Race pace work." },
+    // Bike zones (cross-train days)
+    bikeZr: { name: "Recovery", ...bikeZR, desc: "Very easy spin. Active recovery only." },
+    bikeZ1: { name: "Zone 1",   ...bikeZ1, desc: "Comfortable aerobic ride. Endurance base." },
+    bikeZ2: { name: "Zone 2",   ...bikeZ2, desc: "Controlled effort on the bike." },
+    bikeZ3: { name: "Zone 3",   ...bikeZ3, desc: "Hard effort. Sub-threshold riding." },
+    // Gap range (intentional — no valid training zone)
+    gapLow:  runZR.high + 1,
+    gapHigh: runZ1.low - 1
   };
 }
 
@@ -552,18 +581,18 @@ function getCurrentWeekData(profile) {
 // Long run notes — always slow and steady, never race pace finish
 // ─────────────────────────────────────────────────────────────
 function buildLongRunNotes(phaseName, longMi, isCutback, z1, z2) {
-  const z1str = z1 ? ` (target ${z1.label})` : " (Zone 1)";
-  const z2str = z2 ? ` (target ${z2.label})` : " (Zone 2)";
+  const z1str = z1 ? ` (${z1.label})` : " (Zone 1)";
+  const z2str = z2 ? ` (${z2.label})` : " (Zone 2)";
   if (phaseName === "Race Week") {
-    return `Short shakeout — 3 mi max. Easy, easy, easy${z1str}. Just wake up the legs. No need to prove anything today.`;
+    return `Short shakeout — 3 mi max. Start in Recovery, stay easy${z1str}. Just wake up the legs. No need to prove anything today.`;
   }
   if (phaseName === "Taper") {
-    return `${longMi} mi — your last long run before race day. Start slow, stay slow${z1str}. Finish feeling like you could have done more. Do NOT pick up the pace at the end — save it.`;
+    return `${longMi} mi — your last long run before race day. First mile in Recovery, settle into Zone 1${z1str}. Finish feeling like you could have done more. Do NOT pick up the pace — save it for race day.`;
   }
   if (isCutback) {
-    return `${longMi} mi — recovery week long run. Back off the effort. Stay in Z1${z1str} the whole time. Your body is consolidating 3 weeks of training. Run relaxed and enjoy the easier day.`;
+    return `${longMi} mi — recovery week long run. First mile in Recovery, stay in Zone 1${z1str} the whole time. Your body is consolidating 3 weeks of training. Run relaxed and enjoy the easier day.`;
   }
-  return `${longMi} mi long run. Start in Z1${z1str}, settle into Z2${z2str} by mile 2–3, and hold there. If HR drifts above Z2, slow down or walk briefly. Finish at the same pace you started — never pick it up at the end. Why: the long run builds your aerobic engine and fat-burning capacity. Slow IS the workout.`;
+  return `${longMi} mi long run. Try to keep mile 1 in Recovery — let your body warm up naturally. Build through Zone 1${z1str} and it's ok if you sneak into Zone 2${z2str} toward the end. Concentrate on negative splits — each mile should feel a little stronger than the last. Target your HR average at the middle to 80% of Zone 1. Why: the long run builds your aerobic engine. Slow IS the workout.`;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -576,9 +605,11 @@ function buildLongRunNotes(phaseName, longMi, isCutback, z1, z2) {
 // ─────────────────────────────────────────────────────────────
 function getQualityWorkout(phaseName, levelKey, weekData, zones, goal, weeksToRace, trainingDays) {
   const { easyMi, midMi, isCutback } = weekData;
+  const zr = zones?.zr ? zoneTargetBpm(zones.zr) : null;
   const z1 = zones?.z1 ? zoneTargetBpm(zones.z1) : null;
   const z2 = zones?.z2 ? zoneTargetBpm(zones.z2) : null;
   const z3 = zones?.z3 ? zoneTargetBpm(zones.z3) : null;
+  const zrstr = zr ? ` (target ${zr.label})` : " (Recovery)";
   const z1str = z1 ? ` (target ${z1.label})` : " (Zone 1)";
   const z2str = z2 ? ` (target ${z2.label})` : " (Zone 2)";
   const z3str = z3 ? ` (target ${z3.label})` : " (Zone 3)";
@@ -772,8 +803,10 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) 
   const days      = trainingDays || 4;
   const phaseName = phase?.name || "Foundation";
 
+  const zr = zones?.zr ? zoneTargetBpm(zones.zr) : null;
   const z1 = zones?.z1 ? zoneTargetBpm(zones.z1) : null;
   const z2 = zones?.z2 ? zoneTargetBpm(zones.z2) : null;
+  const zrstr = zr ? ` (target ${zr.label})` : " (Recovery)";
   const z1str = z1 ? ` (target ${z1.label})` : " (Zone 1)";
   const z2str = z2 ? ` (target ${z2.label})` : " (Zone 2)";
 
@@ -795,8 +828,8 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) 
 
   // +1 Cross-Train
   plan[slot(1)] = {
-    idx: slot(1), day: DAYS[slot(1)], type: "Cross-Train", zone: "Z1",
-    notes: `Easy bike, swim, yoga, or walk${z1str}. Move without pounding — your legs are still recovering from yesterday's long run. 30–45 min is plenty. Why: active recovery flushes soreness and drives blood to repair muscle without adding impact stress.`,
+    idx: slot(1), day: DAYS[slot(1)], type: "Cross-Train", zone: "Recovery",
+    notes: `Easy bike, swim, yoga, or walk${zrstr}. Move without pounding — your legs are still recovering from yesterday's long run. 30–45 min is plenty. Why: active recovery flushes soreness and drives blood to repair muscle without adding impact stress.`,
     duration: "30–45 min", miles: 0
   };
 
@@ -993,6 +1026,7 @@ function getView() {
     case "setup-profile":  return SetupProfile();
     case "setup-zones":    return SetupZones();
     case "setup-test":     return SetupTest();
+    case "setup-running":  return SetupRunning();
     case "setup-prefs":    return SetupPrefs();
     case "setup-goal":     return SetupGoal();
     case "update-plan":    return UpdatePlanPage();
@@ -1203,12 +1237,14 @@ function SetupProfile() {
     const heightIn  = parseInt(document.getElementById("s-ht-in")?.value) || 0;
     const weight    = parseFloat(document.getElementById("s-weight")?.value);
     const restingHR = parseInt(document.getElementById("s-rhr")?.value);
+    const knownMaxHR = parseInt(document.getElementById("s-maxhr")?.value) || null;
 
     if (!name || !age || !weight || !restingHR) { showError("Please fill in all required fields."); return; }
     if (age < 18 || age > 95)                   { showError("Please enter a valid age (18–95)."); return; }
     if (restingHR < 35 || restingHR > 100)       { showError("Resting HR should be between 35–100 bpm."); return; }
+    if (knownMaxHR && (knownMaxHR < 130 || knownMaxHR > 220)) { showError("Max HR looks off — should be between 130–220 bpm."); return; }
 
-    const profile = { name, age, heightFt, heightIn, weight, restingHR, createdAt: new Date().toISOString() };
+    const profile = { name, age, heightFt, heightIn, weight, restingHR, knownMaxHR, createdAt: new Date().toISOString() };
     setState({ loading: true });
     await saveData("profile", profile);
     setState({ profile, loading: false, view: "setup-zones", error: null });
@@ -1216,7 +1252,7 @@ function SetupProfile() {
 
   return div("page",
     div("setup-page",
-      div("step-indicator", "Step 1 of 4 — Profile"),
+      div("step-indicator", "Step 1 of 5 — Profile"),
       h2("Tell us about yourself"),
       p("This helps us calculate your heart rate zones and flag fueling issues."),
       errorBanner(),
@@ -1228,6 +1264,9 @@ function SetupProfile() {
       ),
       field("Weight (lbs) *", input({ id: "s-weight", type: "number", placeholder: "e.g. 165", step: "0.1" })),
       field("Resting Heart Rate (bpm) *", input({ id: "s-rhr", type: "number", placeholder: "e.g. 58 — check first thing in the morning", min: "35", max: "100" })),
+      field("Highest heart rate you've seen on your watch (bpm)",
+        input({ id: "s-maxhr", type: "number", placeholder: "e.g. 174 — leave blank if unsure, we'll test you later", min: "130", max: "220" })
+      ),
       btn("Next →", save)
     )
   );
@@ -1237,23 +1276,26 @@ function SetupProfile() {
 // SETUP — Zone method
 // ═══════════════════════════════════════════════════════════════
 function SetupZones() {
-  const { age, restingHR } = state.profile;
-  const maxHR = estimateMaxHR(age);
+  const { age, restingHR, knownMaxHR } = state.profile;
+  const maxHR = knownMaxHR || estimateMaxHR(age);
   const est   = calcZones(maxHR, restingHR);
+  const usingKnown = !!knownMaxHR;
 
   const useEstimate = async () => {
     const zoneData = { ...est, method: "estimated", lastTested: null };
     setState({ loading: true });
     await saveData("zones", zoneData);
-    setState({ zones: zoneData, loading: false, view: "setup-prefs" });
+    setState({ zones: zoneData, loading: false, view: "setup-running" });
   };
 
   return div("page",
     div("setup-page",
-      div("step-indicator", "Step 2 of 4 — Heart Rate Zones"),
+      div("step-indicator", "Step 2 of 5 — Heart Rate Zones"),
       h2("Set up your training zones"),
-      p(`Based on your age (${age}) and resting HR (${restingHR} bpm), here are your estimated zones:`),
-      div("zone-preview", zoneBar(est.z1, "z1"), zoneBar(est.z2, "z2"), zoneBar(est.z3, "z3")),
+      p(usingKnown
+        ? `Based on your max HR (${maxHR} bpm) and resting HR (${restingHR} bpm), here are your zones:`
+        : `Based on your age (${age}) and resting HR (${restingHR} bpm), here are your estimated zones. Run the field test anytime to get exact numbers.`),
+      div("zone-preview", zoneBar(est.zr, "zr"), zoneBar(est.z1, "z1"), zoneBar(est.z2, "z2"), zoneBar(est.z3, "z3")),
       p("Estimates are a solid starting point. You can run a field test at any time to get exact numbers."),
       btn("Use These Zones — Continue", useEstimate),
       div("link-row", btn("I want to do the field test now →", () => setState({ view: "setup-test" }), "btn-link"))
@@ -1274,7 +1316,7 @@ function SetupTest() {
     const zoneData = { ...calcZones(peakHR, state.profile.restingHR), method: "tested", lastTested: new Date().toISOString() };
     setState({ loading: true });
     await saveData("zones", zoneData);
-    setState({ zones: zoneData, loading: false, view: "setup-prefs", error: null });
+    setState({ zones: zoneData, loading: false, view: "setup-running", error: null });
   };
 
   return div("page",
@@ -1297,6 +1339,92 @@ function SetupTest() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// SETUP — Your Running (Step 3)
+// ═══════════════════════════════════════════════════════════════
+function SetupRunning() {
+  const save = async () => {
+    const marathonHistory  = document.getElementById("r-history")?.value;
+    const prevFinish       = document.getElementById("r-prev-finish")?.value.trim() || null;
+    const daysPerWeek      = parseInt(document.getElementById("r-days")?.value);
+    const comfortableLongRun = parseFloat(document.getElementById("r-clr")?.value) || null;
+    const easyRunFeel      = document.getElementById("r-feel")?.value;
+    const best5k10k        = document.getElementById("r-race-time")?.value.trim() || null;
+    const raceType         = document.getElementById("r-race-type")?.value || null;
+
+    if (!marathonHistory)  { showError("Please tell us your marathon experience."); return; }
+    if (!daysPerWeek)      { showError("Please select how many days a week you run."); return; }
+    if (!easyRunFeel)      { showError("Please tell us how your easy runs feel."); return; }
+
+    // Floor comfortable long run at 3 miles
+    const clrSafe = comfortableLongRun ? Math.max(3, comfortableLongRun) : null;
+
+    const runningProfile = { marathonHistory, prevFinish, daysPerWeek, comfortableLongRun: clrSafe, easyRunFeel, best5k10k, raceType };
+    setState({ loading: true });
+    await saveData("profile", { ...state.profile, ...runningProfile });
+    setState({ profile: { ...state.profile, ...runningProfile }, loading: false, view: "setup-prefs", error: null });
+  };
+
+  const historyVal = () => document.getElementById("r-history")?.value;
+
+  return div("page",
+    div("setup-page",
+      div("step-indicator", "Step 3 of 5 — Your Running"),
+      h2("Tell us about your running"),
+      p("This shapes your entire training plan — be honest, not optimistic."),
+      errorBanner(),
+
+      field("Marathon experience *", select("r-history", [
+        ["Select…", ""],
+        ["First marathon — never done one before", "first"],
+        ["Done one before — ready to go again", "repeat"],
+        ["Multiple marathons — chasing a time goal", "competitive"]
+      ], "")),
+
+      div({ id: "r-prev-finish-row", style: "display:none" },
+        field("Your best marathon finish time", input({ id: "r-prev-finish", type: "text", placeholder: "e.g. 4:32:00" }))
+      ),
+
+      field("How many days a week are you currently running? *", select("r-days", [
+        ["Select…", ""],
+        ["1–2 days", 2],
+        ["3 days", 3],
+        ["4 days", 4],
+        ["5 days", 5],
+        ["6+ days", 6]
+      ], "")),
+
+      field("Longest comfortable run in the last 30 days (miles)",
+        input({ id: "r-clr", type: "number", placeholder: "e.g. 6 — felt good, could have kept going", min: "1", max: "26", step: "0.5" })
+      ),
+
+      field("How do your easy runs feel? *", select("r-feel", [
+        ["Select…", ""],
+        ["Truly easy — I could hold a full conversation", "easy"],
+        ["Usually pushing a bit — comfortable but working", "moderate"],
+        ["Hard most days — easy never feels easy", "hard"]
+      ], "")),
+
+      field("Best 5K or 10K in the last 6 months (optional)", select("r-race-type", [
+        ["Select distance…", ""],
+        ["5K", "5k"],
+        ["10K", "10k"]
+      ], "")),
+      input({ id: "r-race-time", type: "text", placeholder: "e.g. 28:45 — leave blank if unsure", style: "margin-top:6px" }),
+
+      btn("Next →", save)
+    )
+  );
+}
+
+// Wire up prev finish time field visibility
+document.addEventListener("change", e => {
+  if (e.target.id === "r-history") {
+    const row = document.getElementById("r-prev-finish-row");
+    if (row) row.style.display = e.target.value !== "first" ? "" : "none";
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
 // SETUP — Preferences
 // ═══════════════════════════════════════════════════════════════
 function SetupPrefs() {
@@ -1307,12 +1435,13 @@ function SetupPrefs() {
     const fitnessLevel  = document.getElementById("p-level")?.value;
     const longRunDay    = parseInt(document.getElementById("p-lrd")?.value);
     const trainingDays  = parseInt(document.getElementById("p-days")?.value);
-    const comfortableLongRun = parseFloat(document.getElementById("p-clr")?.value) || null;
+    const crossTrain    = document.getElementById("p-crosstrain")?.value || null;
+    const raceGoalType  = document.getElementById("p-goal-type")?.value || null;
     if (!raceDate)                        { showError("Please enter your race date."); return; }
     if (new Date(raceDate) <= new Date()) { showError("Race date must be in the future."); return; }
     if (!trainingStart)                   { showError("Please enter your training start date."); return; }
     if (!fitnessLevel)                    { showError("Please select your current fitness level."); return; }
-    const prefs = { raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays, comfortableLongRun };
+    const prefs = { raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays, crossTrain, raceGoalType };
     setState({ loading: true });
     await saveData("profile", { ...state.profile, ...prefs });
     setState({ profile: { ...state.profile, ...prefs }, loading: false, view: "setup-goal", error: null });
@@ -1320,7 +1449,7 @@ function SetupPrefs() {
 
   return div("page",
     div("setup-page",
-      div("step-indicator", "Step 3 of 4 — Training Plan"),
+      div("step-indicator", "Step 4 of 5 — Your Plan"),
       h2("Build your training plan"),
       errorBanner(),
       field("Race Date *", input({ id: "p-race", type: "date", min: today })),
@@ -1329,11 +1458,22 @@ function SetupPrefs() {
         ["Select your level…", ""],
         ...Object.entries(PLAN_LEVELS).map(([k, v]) => [v.label, k])
       ], "")),
-      field("Longest comfortable run in the last 30 days (miles)",
-        input({ id: "p-clr", type: "number", placeholder: "e.g. 6 — a run that felt good and you could have kept going", min: "1", max: "26", step: "0.5" })
-      ),
+      field("What's your race goal?", select("p-goal-type", [
+        ["Select…", ""],
+        ["Finish strong — just want to cross the line", "finish"],
+        ["Beat my last time", "beat-pr"],
+        ["Hit a specific time goal", "time-goal"]
+      ], "")),
       field("Long Run Day", select("p-lrd", DNAMES.map((d, i) => [d, i]), 6)),
       field("Training Days Per Week", select("p-days", [[3,3],[4,4],[5,5],[6,6]].map(([l,v]) => [`${l} days`, v]), 4)),
+      field("Do you cross train?", select("p-crosstrain", [
+        ["Select…", ""],
+        ["None", "none"],
+        ["Bike", "bike"],
+        ["Swim", "swim"],
+        ["Strength training", "strength"],
+        ["Mixed", "mixed"]
+      ], "")),
       btn("Next →", save)
     )
   );
@@ -1370,10 +1510,10 @@ function EditProfile() {
     const updated = { ...profile, name, age, heightFt, heightIn, weight, restingHR, raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays };
     await saveData("profile", updated);
 
-    // Recalculate zones if age or resting HR changed
+    // Recalculate zones if age, resting HR, or knownMaxHR changed
     let updatedZones = state.zones;
     if (state.zones && (age !== profile.age || restingHR !== profile.restingHR)) {
-      const maxHR = state.zones.method === "tested" ? state.zones.maxHR : estimateMaxHR(age);
+      const maxHR = state.zones.method === "tested" ? state.zones.maxHR : (updated.knownMaxHR || estimateMaxHR(age));
       updatedZones = { ...calcZones(maxHR, restingHR), method: state.zones.method, lastTested: state.zones.lastTested || null };
       await saveData("zones", updatedZones);
     }
@@ -1523,7 +1663,7 @@ function Dashboard() {
   const zonesCard = zones ? div("card",
     h2("Your HR Zones"),
     el("div", { className: "zone-method" }, `Method: ${zones.method === "tested" ? "Field test ✓" : "Estimated"}`),
-    zoneBar(zones.z1, "z1"), zoneBar(zones.z2, "z2"), zoneBar(zones.z3, "z3"),
+    zoneBar(zones.zr, "zr"), zoneBar(zones.z1, "z1"), zoneBar(zones.z2, "z2"), zoneBar(zones.z3, "z3"),
     btn("Update Zones (Run Field Test)", () => setState({ view: "test" }), "btn-secondary")
   ) : null;
 
