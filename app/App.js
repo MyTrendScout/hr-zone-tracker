@@ -1449,8 +1449,8 @@ function SetupPrefs() {
     const trainingDays  = parseInt(document.getElementById("p-days")?.value);
     const crossTrain    = document.getElementById("p-crosstrain")?.value || null;
     const raceGoalType  = document.getElementById("p-goal-type")?.value || null;
-    if (!raceDate)                        { showError("Please enter your race date."); return; }
-    if (new Date(raceDate) <= new Date()) { showError("Race date must be in the future."); return; }
+    if (!raceDate)                                          { showError("Please enter your race date."); return; }
+    if (new Date(raceDate + "T12:00:00") <= new Date())    { showError("Race date must be in the future."); return; }
     if (!trainingStart)                   { showError("Please enter your training start date."); return; }
     if (!fitnessLevel)                    { showError("Please select your current fitness level."); return; }
     const prefs = { raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays, crossTrain, raceGoalType };
