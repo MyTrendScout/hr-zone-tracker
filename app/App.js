@@ -1100,6 +1100,13 @@ function LoginPage() {
       const info = doc.data();
       const user = { id: doc.id, name: info.name, admin: false };
       const data = await loadUserData(doc.id);
+      // Migrate old zone schema (z1/z2/z3 only) to new schema (zr/z1/z2/z3)
+      if (data.zones && !data.zones.zr && data.profile) {
+        const maxHR = data.zones.maxHR || data.profile.knownMaxHR || estimateMaxHR(data.profile.age);
+        const newZones = { ...calcZones(maxHR, data.profile.restingHR), method: data.zones.method || "estimated", lastTested: data.zones.lastTested || null };
+        await db.collection("users").doc(doc.id).collection("data").doc("zones").set(newZones, { merge: true });
+        data.zones = newZones;
+      }
       const groupData = data.profile?.groupId ? await loadGroupData(data.profile.groupId, doc.id) : null;
       setState({ user, ...data, groupData, loading: false, error: null, view: data.profile ? "dashboard" : "setup-profile" });
       // Check for Strava OAuth callback (user may have been redirected here after connecting)
@@ -1295,7 +1302,12 @@ function SetupZones() {
       p(usingKnown
         ? `Based on your max HR (${maxHR} bpm) and resting HR (${restingHR} bpm), here are your zones:`
         : `Based on your age (${age}) and resting HR (${restingHR} bpm), here are your estimated zones. Run the field test anytime to get exact numbers.`),
-      div("zone-preview", zoneBar(est.zr, "zr"), zoneBar(est.z1, "z1"), zoneBar(est.z2, "z2"), zoneBar(est.z3, "z3")),
+      div("zone-preview",
+        est.zr ? zoneBar(est.zr, "zr") : null,
+        est.z1 ? zoneBar(est.z1, "z1") : null,
+        est.z2 ? zoneBar(est.z2, "z2") : null,
+        est.z3 ? zoneBar(est.z3, "z3") : null
+      ),
       p("Estimates are a solid starting point. You can run a field test at any time to get exact numbers."),
       btn("Use These Zones — Continue", useEstimate),
       div("link-row", btn("I want to do the field test now →", () => setState({ view: "setup-test" }), "btn-link"))
@@ -1663,7 +1675,10 @@ function Dashboard() {
   const zonesCard = zones ? div("card",
     h2("Your HR Zones"),
     el("div", { className: "zone-method" }, `Method: ${zones.method === "tested" ? "Field test ✓" : "Estimated"}`),
-    zoneBar(zones.zr, "zr"), zoneBar(zones.z1, "z1"), zoneBar(zones.z2, "z2"), zoneBar(zones.z3, "z3"),
+    zones.zr ? zoneBar(zones.zr, "zr") : null,
+    zones.z1 ? zoneBar(zones.z1, "z1") : null,
+    zones.z2 ? zoneBar(zones.z2, "z2") : null,
+    zones.z3 ? zoneBar(zones.z3, "z3") : null,
     btn("Update Zones (Run Field Test)", () => setState({ view: "test" }), "btn-secondary")
   ) : null;
 
