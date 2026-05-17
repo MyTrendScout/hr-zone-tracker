@@ -1380,7 +1380,7 @@ function SetupRunning() {
         ["Multiple marathons — chasing a time goal", "competitive"]
       ], "")),
 
-      div({ id: "r-prev-finish-row", style: "display:none" },
+      el("div", { id: "r-prev-finish-row", style: "display:none" },
         field("Your best marathon finish time", input({ id: "r-prev-finish", type: "text", placeholder: "e.g. 4:32:00" }))
       ),
 
