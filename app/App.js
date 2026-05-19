@@ -212,19 +212,47 @@ async function stravaDisconnect() {
   setState({ stravaTokens: null, stravaActivities: null });
 }
 
+async function fetchStravaActivityDetail(token, activityId) {
+  try {
+    const resp = await fetch(
+      `https://www.strava.com/api/v3/activities/${activityId}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    return await resp.json();
+  } catch (err) {
+    return null;
+  }
+}
+
 async function fetchStravaActivities() {
   setState({ stravaLoading: true });
   try {
     const token = await stravaGetValidToken();
     if (!token) { setState({ stravaLoading: false, error: "Strava token invalid. Please reconnect." }); return; }
+
+    // Step 1 — fetch activity list
     const resp = await fetch(
       "https://www.strava.com/api/v3/athlete/activities?per_page=30&page=1",
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const all = await resp.json();
     if (!Array.isArray(all)) { setState({ stravaLoading: false, error: "Strava returned an unexpected response." }); return; }
-    const runs = all.filter(a => a.type === "Run" || a.sport_type === "Run");
-    setState({ stravaActivities: runs, stravaLoading: false, view: "strava-import" });
+
+    // Step 2 — fetch full details for each activity (gets per-mile splits with HR)
+    // Throttle to avoid rate limit — fetch in batches of 5
+    const detailed = [];
+    for (let i = 0; i < all.length; i += 5) {
+      const batch = all.slice(i, i + 5);
+      const results = await Promise.all(
+        batch.map(a => fetchStravaActivityDetail(token, a.id))
+      );
+      results.forEach((detail, idx) => {
+        // Merge detail data over summary — fall back to summary if detail failed
+        detailed.push(detail && !detail.errors ? { ...batch[idx], ...detail } : batch[idx]);
+      });
+    }
+
+    setState({ stravaActivities: detailed, stravaLoading: false, view: "strava-import" });
   } catch (err) {
     setState({ stravaLoading: false, error: "Could not fetch Strava activities: " + err.message });
   }
@@ -243,9 +271,36 @@ function stravaToWorkout(activity) {
                     Workout: "Strength", Hike: "Walk" };
   const type = typeMap[sportType] || "Run";
 
+  // Extract per-mile splits from detail data (splits_standard = imperial/miles)
+  // Each split has: distance, elapsed_time, moving_time, average_speed, average_heartrate, pace_zone
+  let splits = null;
+  let splitHRs = null;
+  if (activity.splits_standard && Array.isArray(activity.splits_standard) && activity.splits_standard.length > 0) {
+    const validSplits = activity.splits_standard.filter(s => s.moving_time > 0);
+    if (validSplits.length > 0) {
+      // Format splits as pace string per mile e.g. "9:10, 9:25, 9:05"
+      splits = validSplits.map(s => {
+        const distMi = s.distance / 1609.344;
+        if (distMi < 0.1) return null;
+        const paceDecimal = (s.moving_time / 60) / distMi;
+        const pMin = Math.floor(paceDecimal);
+        const pSec = Math.round((paceDecimal - pMin) * 60);
+        return `${pMin}:${String(pSec).padStart(2, "0")}`;
+      }).filter(Boolean).join(", ");
+
+      // Store per-mile avg HR array for evaluation
+      splitHRs = validSplits
+        .map(s => s.average_heartrate ? Math.round(s.average_heartrate) : null)
+        .filter(Boolean);
+      if (splitHRs.length === 0) splitHRs = null;
+    }
+  }
+
   const base = {
     date: dateStr, type, durationSec: durSec,
     avgHR, maxHR, notes: activity.name || "",
+    splits: splits || null,
+    splitHRs: splitHRs || null,
     source: "strava", stravaId: activity.id, loggedAt: new Date().toISOString()
   };
 
