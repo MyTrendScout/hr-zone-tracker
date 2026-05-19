@@ -1895,7 +1895,12 @@ function StravaImportPage() {
       const newWorkouts = [{ id: Date.now().toString(), ...workout }, ...state.workouts];
       // Remove from pending list
       const remaining = (state.stravaActivities || []).filter(a => a.id !== activity.id);
-      setState({ workouts: newWorkouts, stravaActivities: remaining, loading: false });
+      // If nothing left to import, go straight to history to show results
+      if (remaining.length === 0) {
+        setState({ workouts: newWorkouts, stravaActivities: remaining, loading: false, view: "history" });
+      } else {
+        setState({ workouts: newWorkouts, stravaActivities: remaining, loading: false });
+      }
     } catch (err) {
       setState({ loading: false, error: "Import failed: " + err.message });
     }
@@ -1910,35 +1915,35 @@ function StravaImportPage() {
       // Reload workouts fresh
       const snap = await userDoc().collection("workouts").orderBy("date", "desc").limit(100).get();
       const workouts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setState({ workouts, stravaActivities: [], loading: false });
+      // Navigate to history so the user can see their imported workouts
+      setState({ workouts, stravaActivities: [], loading: false, view: "history", error: null });
     } catch (err) {
       setState({ loading: false, error: "Import failed: " + err.message });
     }
   };
 
-  const newRuns = activities.filter(a => !existingStravaIds.has(String(a.id)));
-  const alreadyIn = activities.filter(a => existingStravaIds.has(String(a.id)));
+  const newActivities = activities.filter(a => !existingStravaIds.has(String(a.id)));
 
   return div("page",
     div("card",
       pageHeader("Import from Strava", () => setState({ view: "dashboard" })),
       state.stravaLoading
-        ? p("Fetching your Strava runs…")
+        ? p("Fetching your Strava activities…")
         : activities.length === 0
           ? div(null,
-              p("No runs found in your last 30 Strava activities."),
+              p("No activities found in your last 30 Strava activities."),
               btn("Back to Dashboard", () => setState({ view: "dashboard" }))
             )
           : div(null,
               errorBanner(),
-              newRuns.length > 0
+              newActivities.length > 0
                 ? div("strava-import-header",
                     el("p", { className: "strava-import-count" },
-                      `${newRuns.length} new run${newRuns.length !== 1 ? "s" : ""} ready to import`
+                      `${newActivities.length} new activit${newActivities.length !== 1 ? "ies" : "y"} ready to import`
                     ),
-                    btn(`Import All (${newRuns.length})`, importAll, "btn-strava-import-all")
+                    btn(`Import All (${newActivities.length})`, importAll, "btn-strava-import-all")
                   )
-                : p("All recent Strava runs are already in your log."),
+                : p("All recent Strava activities are already in your log."),
 
               div("strava-activity-list",
                 activities.map(activity => {
@@ -1953,7 +1958,7 @@ function StravaImportPage() {
 
                   return div(`strava-activity-row${alreadyImported ? " strava-already-imported" : ""}`,
                     div("strava-activity-info",
-                      el("span", { className: "strava-activity-name" }, activity.name || "Run"),
+                      el("span", { className: "strava-activity-name" }, activity.name || activity.sport_type || activity.type || "Activity"),
                       el("span", { className: "strava-activity-date" }, dateStr),
                       div("strava-activity-stats",
                         el("span", null, `📍 ${distMi} mi`),
@@ -2178,6 +2183,23 @@ function LogWorkout() {
 // ═══════════════════════════════════════════════════════════════
 // WORKOUT HISTORY
 // ═══════════════════════════════════════════════════════════════
+function workoutZoneResult(w) {
+  const zones = state.zones;
+  if (!w.avgHR || !zones || !zones.zr) return null;
+  const hr = w.avgHR;
+
+  let label, cls;
+  if      (hr < zones.zr.low)                              { label = "Below Recovery"; cls = "wz-below"; }
+  else if (hr <= zones.zr.high)                            { label = "Recovery";       cls = "wz-zr";    }
+  else if (hr < zones.z1.low)                              { label = "Gap Zone";       cls = "wz-gap";   }
+  else if (hr <= zones.z1.high)                            { label = "Zone 1";         cls = "wz-z1";    }
+  else if (hr <= zones.z2.high)                            { label = "Zone 2";         cls = "wz-z2";    }
+  else if (zones.z3 && hr <= zones.z3.high)                { label = "Zone 3";         cls = "wz-z3";    }
+  else                                                     { label = "Above Z3";       cls = "wz-above"; }
+
+  return el("span", { className: `workout-zone-result ${cls}` }, `● ${label}`);
+}
+
 function workoutMoodTag(w, showFlag) {
   const cur  = MOODS.find(m => m.key === w.mood);
   const orig = MOODS.find(m => m.key === w.moodOriginal);
@@ -2215,11 +2237,16 @@ function WorkoutHistory() {
                 w.avgHR     ? span("♥ avg ", w.avgHR, " bpm")                 : null,
                 w.maxHR     ? span("♥ max ", w.maxHR, " bpm")                 : null,
                 w.weightLbs ? span("⚖️ ", w.weightLbs, " lbs")                : null,
-                w.predictedFinishStr ? span("📈 ", w.predictedFinishStr)       : null
+                w.predictedFinishStr ? span("📈 ", w.predictedFinishStr)       : null,
+                workoutZoneResult(w)
               ),
               w.splits ? div("workout-splits",
                 el("span", { className: "splits-label" }, w.type === "Swim" ? "Splits /100 yds:" : "Splits /mi:"),
                 el("span", { className: "splits-values" }, w.splits)
+              ) : null,
+              w.splitHRs && w.splitHRs.length > 0 ? div("workout-splits",
+                el("span", { className: "splits-label" }, "Mile HRs:"),
+                el("span", { className: "splits-values" }, w.splitHRs.join(", ") + " bpm")
               ) : null,
               workoutMoodTag(w, false),
               w.notes ? div("workout-notes", w.notes) : null,

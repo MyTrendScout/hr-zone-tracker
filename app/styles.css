@@ -696,6 +696,23 @@ ol li { margin-bottom: 6px; }
   letter-spacing: 0.04em;
 }
 
+/* ── Workout zone result badge ── */
+.workout-zone-result {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  letter-spacing: 0.02em;
+}
+.wz-below  { background: #e8f0fe; color: #3c6fd6; }
+.wz-zr     { background: #e0f7f4; color: #00897b; }
+.wz-gap    { background: #f3f3f3; color: #888;    }
+.wz-z1     { background: #e8f5e9; color: #2e7d32; }
+.wz-z2     { background: #fff3e0; color: #e65100; }
+.wz-z3     { background: #fce4ec; color: #c62828; }
+.wz-above  { background: #f44336; color: #fff;    }
+
 /* ── Strava ── */
 .strava-section {
   margin-top: 16px;
