@@ -456,7 +456,7 @@ const PLAN_LEVELS = {
   competitive: {
     label: "Competitive — chasing a time goal",
     desc:  "Speed work, tempo runs, and peak mileage. Racing to a PR.",
-    longStart: 10, longPeak: 22,
+    longStart: 10, longPeak: 20,
     easyMiRange: [5, 8], midMiRange: [6, 10],
     hasFartlek: true
   }
@@ -540,6 +540,52 @@ function validateGoal(targetPaceStr, predictedSec) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// PLAN LENGTH RECOMMENDATION
+// ═══════════════════════════════════════════════════════════════
+function recommendedPlanWeeks(weeklyMileage, fitnessLevel, marathonHistory) {
+  const key = normalizeFitnessLevel(fitnessLevel);
+  const mi  = weeklyMileage || 0;
+  if (mi < 15 || key === "scratch" || marathonHistory === "first") return { min: 20, max: 24 };
+  if (mi < 25) return { min: 18, max: 20 };
+  if (mi < 35) return { min: 16, max: 18 };
+  return { min: 12, max: 16 };
+}
+
+function planLengthWarning(profile) {
+  if (!profile?.raceDate) return null;
+  const rec = recommendedPlanWeeks(profile.weeklyMileage, profile.fitnessLevel, profile.marathonHistory);
+  const actual = Math.round((new Date(profile.raceDate + "T12:00:00") - new Date()) / (1000 * 60 * 60 * 24 * 7));
+  if (actual < rec.min) {
+    return `Your race is ${actual} weeks away but your profile suggests ${rec.min}–${rec.max} weeks of preparation. Consider adjusting your goal or race date.`;
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ZONE BOUND RESOLVER  (maps plan zone strings → bpm ranges)
+// ═══════════════════════════════════════════════════════════════
+function resolveZoneBounds(zoneStr, zones) {
+  if (!zones || !zoneStr) return { low: null, high: null };
+  switch (zoneStr) {
+    case "Recovery": return { low: zones.zr?.low,  high: zones.zr?.high  };
+    case "Z1":       return { low: zones.z1?.low,  high: zones.z1?.high  };
+    case "Z1→Z2":    // long run (drift ok into Z2) — full band Z1.low → Z2.high
+    case "Z1–Z2":    return { low: zones.z1?.low,  high: zones.z2?.high  };
+    case "Z2":       return { low: zones.z2?.low,  high: zones.z2?.high  };
+    case "Z2–Z3":    return { low: zones.z2?.low,  high: zones.z3?.high  };
+    case "Z3":       return { low: zones.z3?.low,  high: zones.z3?.high  };
+    default:         return { low: null, high: null };
+  }
+}
+
+// Convert "YYYY-MM-DD" weekSunday + dayIndex (0=Sun) → "YYYY-MM-DD"
+function isoFromWeekStart(weekSundayStr, dayIdx) {
+  const d = new Date(weekSundayStr + "T12:00:00");
+  d.setDate(d.getDate() + dayIdx);
+  return d.toISOString().split("T")[0];
+}
+
+// ═══════════════════════════════════════════════════════════════
 // TRAINING PLAN ENGINE
 // ═══════════════════════════════════════════════════════════════
 const DAYS   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
@@ -577,9 +623,17 @@ function yassoTime(goalFinishStr) {
   return `${parts[0]}:${String(parts[1]).padStart(2, "0")}`;
 }
 
-function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun) {
+function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun, trainingDays, goalBracket) {
   const key   = normalizeFitnessLevel(fitnessLevel);
   const level = { ...PLAN_LEVELS[key] || PLAN_LEVELS.firstTimer };
+  const days  = trainingDays || 4;
+
+  // Finish-only goal: cap long run at 20 mi and disable fartlek progression
+  if (goalBracket === "finish" || goalBracket === "sub-5") {
+    level.longPeak  = Math.min(level.longPeak, 20);
+    level.hasFartlek = false;
+  }
+
   // If user told us their comfortable long run, use that as the starting point
   // but never exceed what the fitness level says is appropriate
   if (comfortableLongRun && comfortableLongRun > 0) {
@@ -587,16 +641,27 @@ function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun) {
   }
   const phase = getPhase(weeksToRace);
 
+  // Helper: compute totalMi from component miles
+  const computeTotal = (lMi, eMi, mMi) => {
+    const qMi = Math.max(eMi, mMi || eMi);
+    if (days >= 6) return roundHalf(lMi + qMi + eMi * 3);
+    if (days >= 5) return roundHalf(lMi + qMi + eMi * 2);
+    if (days >= 4) return roundHalf(lMi + qMi + eMi);
+    return roundHalf(lMi + qMi);
+  };
+
   // Race week: gentle shakeout
   if (weeksToRace <= 1) {
-    return { longMi: 3, easyMi: 2, midMi: 0, isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
+    return { longMi: 3, easyMi: 2, midMi: 0, totalMi: computeTotal(3, 2, 0), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
   // Taper
   if (weeksToRace === 2) {
-    return { longMi: roundHalf(level.longPeak * 0.55), easyMi: level.easyMiRange[0], midMi: 0, isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
+    const lMi = roundHalf(level.longPeak * 0.55);
+    return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: 0, totalMi: computeTotal(lMi, level.easyMiRange[0], 0), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
   if (weeksToRace === 3) {
-    return { longMi: roundHalf(level.longPeak * 0.75), easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], isCutback: false, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
+    const lMi = roundHalf(level.longPeak * 0.75);
+    return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], totalMi: computeTotal(lMi, level.easyMiRange[0], level.midMiRange[0]), isCutback: false, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
   }
 
   // 3:1 block progression with 10% rule
@@ -622,7 +687,7 @@ function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun) {
   const easyMi = roundHalf(lerp(level.easyMiRange[0], level.easyMiRange[1], progressRatio));
   const midMi  = roundHalf(lerp(level.midMiRange[0],  level.midMiRange[1],  progressRatio));
 
-  return { longMi, easyMi, midMi, isCutback, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
+  return { longMi, easyMi, midMi, totalMi: computeTotal(longMi, easyMi, midMi), isCutback, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
 }
 
 function getCurrentWeekData(profile) {
@@ -658,7 +723,7 @@ function buildLongRunNotes(phaseName, longMi, isCutback, z1, z2) {
 //   4 days → "tempo"    (Tempo / Race Pace OK, Yasso 800s held back)
 //   5 days → "full"     (complete progression, Yasso unlocked)
 // ─────────────────────────────────────────────────────────────
-function getQualityWorkout(phaseName, levelKey, weekData, zones, goal, weeksToRace, trainingDays) {
+function getQualityWorkout(phaseName, levelKey, weekData, zones, goal, weeksToRace, trainingDays, goalBracket) {
   const { easyMi, midMi, isCutback } = weekData;
   const zr = zones?.zr ? zoneTargetBpm(zones.zr) : null;
   const z1 = zones?.z1 ? zoneTargetBpm(zones.z1) : null;
@@ -670,10 +735,15 @@ function getQualityWorkout(phaseName, levelKey, weekData, zones, goal, weeksToRa
   const z3str = z3 ? ` (target ${z3.label})` : " (Zone 3)";
   const qMi = Math.max(easyMi, midMi || easyMi);
   const days = trainingDays || 4;
-  // capFartlek = 3-day runners: only easy/fartlek-level work (long run is the hard effort)
-  // capTempo   = 4-day runners: tempo and race pace OK, Yasso 800s held back
-  const capFartlek = days <= 3;
-  const capTempo   = days === 4;
+
+  // Effective quality cap — strictest of goalBracket and training days
+  // finish / sub-5 → fartlek only (easy, no real speed work)
+  // sub-4:30       → tempo ok, Yasso 800s held back
+  // sub-4 and faster + 4 days → tempo cap; 5 days → full
+  const goalForceFartlek = goalBracket === "finish" || goalBracket === "sub-5";
+  const goalForceTempo   = goalBracket === "sub-4:30";
+  const capFartlek = days <= 3 || goalForceFartlek;
+  const capTempo   = !capFartlek && (days === 4 || goalForceTempo);
 
   // Race Week — easy shakeout only
   if (phaseName === "Race Week") {
@@ -853,7 +923,7 @@ function getQualityWorkout(phaseName, levelKey, weekData, zones, goal, weeksToRa
 //   +5  Base Run      (if trainingDays >= 5) else Rest
 //   +6  Rest          (protect the long run — sleep, prep, hydrate)
 // ─────────────────────────────────────────────────────────────
-function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) {
+function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal, weekSundayStr) {
   const { longMi, easyMi, isCutback, phase, levelKey, weeksToRace } = weekData;
   const days      = trainingDays || 4;
   const phaseName = phase?.name || "Foundation";
@@ -871,7 +941,9 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) 
   const plan = DAYS.map((d, i) => ({
     idx: i, day: d, type: "Rest", zone: null,
     notes: "Full rest or a gentle 20-min walk. Recovery is where adaptation happens — this day is as important as any run.",
-    duration: "", miles: 0
+    duration: "", miles: 0,
+    targetZoneLow: null, targetZoneHigh: null,
+    plannedDate: weekSundayStr ? isoFromWeekStart(weekSundayStr, i) : null
   }));
 
   // +0 Long Run
@@ -895,9 +967,12 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) 
     duration: "", miles: 0
   };
 
-  // +3 Quality Run (intensity scales with training days)
-  const quality = getQualityWorkout(phaseName, levelKey || "firstTimer", weekData, zones, goal, weeksToRace ?? 99, days);
-  plan[slot(3)] = { idx: slot(3), day: DAYS[slot(3)], ...quality };
+  // +3 Quality Run (intensity scales with training days and goal bracket)
+  const quality = getQualityWorkout(phaseName, levelKey || "firstTimer", weekData, zones, goal, weeksToRace ?? 99, days, weekData.goalBracket);
+  plan[slot(3)] = { idx: slot(3), day: DAYS[slot(3)], ...quality,
+    targetZoneLow: null, targetZoneHigh: null,
+    plannedDate: weekSundayStr ? isoFromWeekStart(weekSundayStr, slot(3)) : null
+  };
 
   // +4 and +5 slots — placement depends on training days to avoid consecutive rest days:
   //   5-day: +4=Base, +5=Base  → rests only at +2 and +6 (no consecutive)
@@ -928,8 +1003,17 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) 
   plan[slot(6)] = {
     idx: slot(6), day: DAYS[slot(6)], type: "Rest", zone: null,
     notes: "Rest day before your long run. Stay off your feet as much as you can. Lay out your gear, plan your route, hydrate throughout the day, and get to bed early.",
-    duration: "", miles: 0
+    duration: "", miles: 0,
+    targetZoneLow: null, targetZoneHigh: null,
+    plannedDate: weekSundayStr ? isoFromWeekStart(weekSundayStr, slot(6)) : null
   };
+
+  // Resolve bpm bounds for every day that has a zone target
+  for (const day of plan) {
+    const { low, high } = resolveZoneBounds(day.zone, zones);
+    day.targetZoneLow  = low  ?? null;
+    day.targetZoneHigh = high ?? null;
+  }
 
   return plan;
 }
@@ -1413,6 +1497,7 @@ function SetupRunning() {
     const marathonHistory  = document.getElementById("r-history")?.value;
     const prevFinish       = document.getElementById("r-prev-finish")?.value.trim() || null;
     const daysPerWeek      = parseInt(document.getElementById("r-days")?.value);
+    const weeklyMileage    = parseFloat(document.getElementById("r-weekly-mi")?.value) || null;
     const comfortableLongRun = parseFloat(document.getElementById("r-clr")?.value) || null;
     const easyRunFeel      = document.getElementById("r-feel")?.value;
     const best5k10k        = document.getElementById("r-race-time")?.value.trim() || null;
@@ -1425,7 +1510,7 @@ function SetupRunning() {
     // Floor comfortable long run at 3 miles
     const clrSafe = comfortableLongRun ? Math.max(3, comfortableLongRun) : null;
 
-    const runningProfile = { marathonHistory, prevFinish, daysPerWeek, comfortableLongRun: clrSafe, easyRunFeel, best5k10k, raceType };
+    const runningProfile = { marathonHistory, prevFinish, daysPerWeek, weeklyMileage, comfortableLongRun: clrSafe, easyRunFeel, best5k10k, raceType };
     setState({ loading: true });
     await saveData("profile", { ...state.profile, ...runningProfile });
     setState({ profile: { ...state.profile, ...runningProfile }, loading: false, view: "setup-prefs", error: null });
@@ -1460,6 +1545,10 @@ function SetupRunning() {
         ["6+ days", 6]
       ], "")),
 
+      field("Current average weekly mileage (miles)",
+        input({ id: "r-weekly-mi", type: "number", placeholder: "e.g. 22 — your typical week lately", min: "0", max: "150", step: "1" })
+      ),
+
       field("Longest comfortable run in the last 30 days (miles)",
         input({ id: "r-clr", type: "number", placeholder: "e.g. 6 — felt good, could have kept going", min: "1", max: "26", step: "0.5" })
       ),
@@ -1483,11 +1572,24 @@ function SetupRunning() {
   );
 }
 
-// Wire up prev finish time field visibility
+// Wire up form dynamic behaviours
 document.addEventListener("change", e => {
+  // Show/hide prev finish time
   if (e.target.id === "r-history") {
     const row = document.getElementById("r-prev-finish-row");
     if (row) row.style.display = e.target.value !== "first" ? "" : "none";
+  }
+  // Live plan-length warning in SetupPrefs
+  if (e.target.id === "p-race" || e.target.id === "p-level") {
+    const raceDate    = document.getElementById("p-race")?.value;
+    const fitnessLevel = document.getElementById("p-level")?.value;
+    const warnEl      = document.getElementById("p-plan-warning");
+    if (!warnEl || !raceDate || !fitnessLevel) { if (warnEl) warnEl.textContent = ""; return; }
+    const rec    = recommendedPlanWeeks(state.profile?.weeklyMileage, fitnessLevel, state.profile?.marathonHistory);
+    const actual = Math.round((new Date(raceDate + "T12:00:00") - new Date()) / (1000 * 60 * 60 * 24 * 7));
+    warnEl.textContent = actual < rec.min
+      ? `⚠️ Race is ${actual} weeks away — your profile suggests ${rec.min}–${rec.max} weeks. Consider a shorter goal or adjusting your race date.`
+      : "";
   }
 });
 
@@ -1503,15 +1605,29 @@ function SetupPrefs() {
     const longRunDay    = parseInt(document.getElementById("p-lrd")?.value);
     const trainingDays  = parseInt(document.getElementById("p-days")?.value);
     const crossTrain    = document.getElementById("p-crosstrain")?.value || null;
-    const raceGoalType  = document.getElementById("p-goal-type")?.value || null;
+    const goalBracket   = document.getElementById("p-goal-bracket")?.value || null;
     if (!raceDate)                                          { showError("Please enter your race date."); return; }
     if (new Date(raceDate + "T12:00:00") <= new Date())    { showError("Race date must be in the future."); return; }
     if (!trainingStart)                   { showError("Please enter your training start date."); return; }
     if (!fitnessLevel)                    { showError("Please select your current fitness level."); return; }
-    const prefs = { raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays, crossTrain, raceGoalType };
+    const prefs = { raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays, crossTrain, goalBracket };
     setState({ loading: true });
     await saveData("profile", { ...state.profile, ...prefs });
     setState({ profile: { ...state.profile, ...prefs }, loading: false, view: "setup-goal", error: null });
+  };
+
+  // Show plan-length warning live when race date changes
+  const checkPlanLength = () => {
+    const raceDate = document.getElementById("p-race")?.value;
+    const fitnessLevel = document.getElementById("p-level")?.value;
+    const warnEl = document.getElementById("p-plan-warning");
+    if (!warnEl) return;
+    if (!raceDate || !fitnessLevel) { warnEl.textContent = ""; return; }
+    const rec = recommendedPlanWeeks(state.profile?.weeklyMileage, fitnessLevel, state.profile?.marathonHistory);
+    const actual = Math.round((new Date(raceDate + "T12:00:00") - new Date()) / (1000 * 60 * 60 * 24 * 7));
+    warnEl.textContent = actual < rec.min
+      ? `⚠️ Your race is ${actual} weeks away — your profile suggests ${rec.min}–${rec.max} weeks. Consider adjusting your goal or race date.`
+      : "";
   };
 
   return div("page",
@@ -1520,16 +1636,20 @@ function SetupPrefs() {
       h2("Build your training plan"),
       errorBanner(),
       field("Race Date *", input({ id: "p-race", type: "date", min: today })),
+      el("div", { id: "p-plan-warning", className: "plan-length-warning" }),
       field("Training Start Date *", input({ id: "p-start", type: "date", value: today })),
       field("Current Fitness Level *", select("p-level", [
         ["Select your level…", ""],
         ...Object.entries(PLAN_LEVELS).map(([k, v]) => [v.label, k])
       ], "")),
-      field("What's your race goal?", select("p-goal-type", [
+      field("Race goal *", select("p-goal-bracket", [
         ["Select…", ""],
-        ["Finish strong — just want to cross the line", "finish"],
-        ["Beat my last time", "beat-pr"],
-        ["Hit a specific time goal", "time-goal"]
+        ["Finish — I just want to cross the line", "finish"],
+        ["Sub-5:00 (11:27/mi)", "sub-5"],
+        ["Sub-4:30 (10:18/mi)", "sub-4:30"],
+        ["Sub-4:00 (9:09/mi)",  "sub-4"],
+        ["Sub-3:30 (8:00/mi)",  "sub-3:30"],
+        ["Sub-3:00 (6:52/mi)",  "sub-3"]
       ], "")),
       field("Long Run Day", select("p-lrd", DNAMES.map((d, i) => [d, i]), 6)),
       field("Training Days Per Week", select("p-days", [[3,3],[4,4],[5,5],[6,6]].map(([l,v]) => [`${l} days`, v]), 4)),
@@ -2213,14 +2333,105 @@ function workoutMoodTag(w, showFlag) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+// WORKOUT EVALUATION ENGINE
+// ═══════════════════════════════════════════════════════════════
+function buildPlanIndex(profile, zones, goal) {
+  if (!profile?.raceDate || !profile?.trainingStart) return {};
+  const startDate  = new Date(profile.trainingStart + "T12:00:00");
+  const raceDate   = new Date(profile.raceDate + "T12:00:00");
+  const totalWeeks = Math.max(1, Math.ceil((raceDate - startDate) / (7 * 24 * 60 * 60 * 1000)));
+
+  // Sunday of week 0
+  const week0Sunday = new Date(startDate);
+  week0Sunday.setDate(week0Sunday.getDate() - week0Sunday.getDay());
+
+  const longRunDay   = profile.longRunDay ?? 6;
+  const trainingDays = profile.trainingDays || 4;
+  const goalBracket  = profile.goalBracket || null;
+  const index        = {};
+
+  for (let w = 0; w < totalWeeks; w++) {
+    const weekSunday = new Date(week0Sunday);
+    weekSunday.setDate(week0Sunday.getDate() + w * 7);
+    const weekSundayStr = weekSunday.toISOString().split("T")[0];
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, trainingDays, goalBracket);
+    const plan = buildFlexibleWeekPlan(longRunDay, trainingDays, wd, zones, goal, weekSundayStr);
+    for (const day of plan) {
+      if (day.plannedDate) index[day.plannedDate] = day;
+    }
+  }
+  return index;
+}
+
+function evaluateWorkout(workout, planIndex) {
+  if (!workout?.date || !planIndex) return null;
+  const planned = planIndex[workout.date];
+  if (!planned) return null; // outside plan window — show nothing
+
+  if (planned.type === "Rest") {
+    return { grade: "bonus", label: "Bonus — rest day run" };
+  }
+  if (planned.type === "Strength" || planned.type === "Cross-Train") {
+    return { grade: "info", label: planned.type, plannedType: planned.type };
+  }
+  if (!workout.avgHR) {
+    return { grade: "no-hr", label: `Planned: ${planned.type}${planned.zone ? " (" + planned.zone + ")" : ""}`, plannedType: planned.type };
+  }
+
+  const lo = planned.targetZoneLow;
+  const hi = planned.targetZoneHigh;
+  if (!lo || !hi) {
+    return { grade: "no-hr", label: `Planned: ${planned.type}`, plannedType: planned.type };
+  }
+
+  const hr = workout.avgHR;
+  if (hr >= lo && hr <= hi)  return { grade: "green",  label: `✅ On target — ${planned.type}`,          plannedType: planned.type, plannedZone: planned.zone };
+  if (hr < lo)               return { grade: "yellow", label: `🟡 Below target zone — ${planned.type}`,  plannedType: planned.type, plannedZone: planned.zone };
+                             return { grade: "red",    label: `🔴 Above target zone — ${planned.type}`,  plannedType: planned.type, plannedZone: planned.zone };
+}
+
+function workoutEvalBadge(ev) {
+  if (!ev) return null;
+  const cls = ev.grade === "green"  ? "eval-green"  :
+              ev.grade === "yellow" ? "eval-yellow" :
+              ev.grade === "red"    ? "eval-red"    :
+              ev.grade === "bonus"  ? "eval-bonus"  :
+              ev.grade === "info"   ? "eval-info"   : "eval-nohr";
+  return el("span", { className: `workout-eval-badge ${cls}` }, ev.label);
+}
+
+function analyzeSplitHRDrift(splitHRs, zones) {
+  if (!splitHRs || splitHRs.length < 2 || !zones) return null;
+  const zoneFor = hr => {
+    if (!hr) return null;
+    if (hr <= (zones.zr?.high || 0)) return "Recovery";
+    if (hr < (zones.z1?.low  || 0)) return "Gap";
+    if (hr <= (zones.z1?.high || 0)) return "Z1";
+    if (hr <= (zones.z2?.high || 0)) return "Z2";
+    if (hr <= (zones.z3?.high || 0)) return "Z3";
+    return "Above Z3";
+  };
+  const first = zoneFor(splitHRs[0]);
+  const last  = zoneFor(splitHRs[splitHRs.length - 1]);
+  const driftedHigh = last === "Z3" || last === "Above Z3";
+  const startedHigh = first === "Z3" || first === "Above Z3";
+  if (startedHigh) return "Started too hard — began in Z3.";
+  if (driftedHigh) return "HR drifted into Z3 late — good effort, watch pacing next time.";
+  return null; // healthy drift — no warning needed
+}
+
 function WorkoutHistory() {
+  const planIndex = buildPlanIndex(state.profile, state.zones, state.goal);
   return div("page",
     el("header", null, h1("Workout History"), btn("← Back", () => setState({ view: "dashboard" }), "btn-back")),
     state.workouts.length === 0
       ? div("card", p("No workouts logged yet."))
       : div("workout-list",
-          state.workouts.map(w =>
-            div("workout-card",
+          state.workouts.map(w => {
+            const evaluation  = evaluateWorkout(w, planIndex);
+            const driftNote   = w.splitHRs ? analyzeSplitHRDrift(w.splitHRs, state.zones) : null;
+            return div("workout-card",
               div("workout-header",
                 el("span", { className: "workout-date" }, w.date),
                 el("span", { className: "workout-type-tag" }, w.type || "Run"),
@@ -2240,6 +2451,7 @@ function WorkoutHistory() {
                 w.predictedFinishStr ? span("📈 ", w.predictedFinishStr)       : null,
                 workoutZoneResult(w)
               ),
+              workoutEvalBadge(evaluation),
               w.splits ? div("workout-splits",
                 el("span", { className: "splits-label" }, w.type === "Swim" ? "Splits /100 yds:" : "Splits /mi:"),
                 el("span", { className: "splits-values" }, w.splits)
@@ -2248,11 +2460,12 @@ function WorkoutHistory() {
                 el("span", { className: "splits-label" }, "Mile HRs:"),
                 el("span", { className: "splits-values" }, w.splitHRs.join(", ") + " bpm")
               ) : null,
+              driftNote ? el("p", { className: "drift-note" }, driftNote) : null,
               workoutMoodTag(w, false),
               w.notes ? div("workout-notes", w.notes) : null,
               w.source === "strava" ? el("span", { className: "strava-source-tag" }, "via Strava") : null
-            )
-          )
+            );
+          })
         )
   );
 }
@@ -2316,7 +2529,7 @@ function renderPlanChart(profile, totalWeeks, currentWeekIdx) {
   const maxLong = level.longPeak;
 
   const weeks = Array.from({ length: totalWeeks }, (_, w) => {
-    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun);
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, profile.trainingDays || 4, profile.goalBracket || null);
     return { weekNum: w + 1, wd, isCurrent: w === currentWeekIdx };
   });
 
@@ -2342,13 +2555,21 @@ function renderPlanChart(profile, totalWeeks, currentWeekIdx) {
 function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
   const longRunDay   = profile.longRunDay ?? 6;
   const trainingDays = profile.trainingDays || 4;
-  const startDate    = new Date(profile.trainingStart || profile.createdAt);
+  const goalBracket  = profile.goalBracket || null;
+  const startDate    = new Date((profile.trainingStart || profile.createdAt) + "T12:00:00");
+
+  // Compute the Sunday of training week 0 (for plannedDate mapping)
+  const week0Sunday = new Date(startDate);
+  week0Sunday.setDate(week0Sunday.getDate() - week0Sunday.getDay());
 
   const weeks = Array.from({ length: totalWeeks }, (_, w) => {
-    const wd      = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun);
-    const plan    = buildFlexibleWeekPlan(longRunDay, trainingDays, wd, state.zones, state.goal);
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, trainingDays, goalBracket);
+    const weekSunday = new Date(week0Sunday);
+    weekSunday.setDate(week0Sunday.getDate() + w * 7);
+    const weekSundayStr = weekSunday.toISOString().split("T")[0];
+    const plan = buildFlexibleWeekPlan(longRunDay, trainingDays, wd, state.zones, state.goal, weekSundayStr);
     const weekStart = new Date(startDate);
-    weekStart.setDate(weekStart.getDate() + w * 7);
+    weekStart.setDate(startDate.getDate() + w * 7);
     return { weekNum: w + 1, plan, wd, isCurrent: w === currentWeekIdx, weekStart };
   });
 
@@ -2363,6 +2584,7 @@ function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
             el("span", { className: "plan-week-num" }, `Week ${w.weekNum}`),
             el("span", { className: "plan-week-date" }, dateStr),
             el("span", { className: "plan-phase-tag" }, phaseName),
+            w.wd.totalMi ? el("span", { className: "plan-week-miles" }, `~${w.wd.totalMi} mi`) : null,
             w.isCurrent    ? el("span", { className: "plan-tag current-tag" }, "← Now")      : null,
             w.wd.isCutback ? el("span", { className: "plan-tag cutback-tag" }, "↓ Recovery") : null
           ),
