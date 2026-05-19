@@ -597,10 +597,10 @@ function weeksUntil(dateStr) {
 
 function getPhase(weeksToRace) {
   if (weeksToRace <= 1)  return { name: "Race Week",   note: "Rest, hydrate, believe. You are ready." };
-  if (weeksToRace <= 3)  return { name: "Taper",       note: "Cut volume, keep sharpness. Rest is training." };
-  if (weeksToRace <= 7)  return { name: "Peak",        note: "Your hardest weeks. Trust the process. This is where it comes together." };
-  if (weeksToRace <= 14) return { name: "Build",       note: "Add quality runs. Long runs grow each week. Consistency beats intensity." };
-  if (weeksToRace <= 20) return { name: "Base",        note: "Easy miles. Build your aerobic engine. Nothing heroic yet." };
+  if (weeksToRace <= 4)  return { name: "Taper",       note: "Cut volume, keep sharpness. Rest is training." };
+  if (weeksToRace <= 8)  return { name: "Peak",        note: "Your hardest weeks. Trust the process. This is where it comes together." };
+  if (weeksToRace <= 15) return { name: "Build",       note: "Add quality runs. Long runs grow each week. Consistency beats intensity." };
+  if (weeksToRace <= 21) return { name: "Base",        note: "Easy miles. Build your aerobic engine. Nothing heroic yet." };
   return                         { name: "Foundation", note: "Establish the habit. Every run matters. Keep it easy and stay consistent." };
 }
 
@@ -650,17 +650,33 @@ function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun, tr
     return roundHalf(lMi + qMi);
   };
 
+  // Phase-based long run ceiling — prevents premature plateau
+  // Long runs only reach their true peak in the Peak phase (weeks 5-8 before race)
+  const PHASE_MAX_LONG = {
+    "Foundation": 12,
+    "Base":       15,
+    "Build":      18,
+    "Peak":       level.longPeak   // full peak (20 mi) only in Peak phase
+  };
+
   // Race week: gentle shakeout
   if (weeksToRace <= 1) {
     return { longMi: 3, easyMi: 2, midMi: 0, totalMi: computeTotal(3, 2, 0), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
-  // Taper
+  // 3-week taper (MH protocol: -10-15% / -45% / shakeout)
   if (weeksToRace === 2) {
-    const lMi = roundHalf(level.longPeak * 0.55);
+    // Deep taper — ~50% of peak long run, no quality, minimal miles
+    const lMi = roundHalf(level.longPeak * 0.50);
     return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: 0, totalMi: computeTotal(lMi, level.easyMiRange[0], 0), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
   if (weeksToRace === 3) {
-    const lMi = roundHalf(level.longPeak * 0.75);
+    // Mid taper — ~70% of peak long run, light quality (strides only)
+    const lMi = roundHalf(level.longPeak * 0.70);
+    return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], totalMi: computeTotal(lMi, level.easyMiRange[0], level.midMiRange[0]), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
+  }
+  if (weeksToRace === 4) {
+    // First taper week — ~85% of peak long run, maintain some quality to stay sharp
+    const lMi = roundHalf(level.longPeak * 0.85);
     return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], totalMi: computeTotal(lMi, level.easyMiRange[0], level.midMiRange[0]), isCutback: false, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
   }
 
@@ -674,12 +690,14 @@ function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun, tr
 
   let longMi;
   if (isCutback) {
-    // Cutback = 72% of that block's peak (week 3 of the block)
+    // Cutback = 68% of that block's peak (~32% reduction, within MH's 25-40% range)
     const blockPeak = roundHalf(Math.min(level.longStart * Math.pow(1.10, blockNum * 3 + 2), level.longPeak));
-    longMi = roundHalf(blockPeak * 0.72);
+    longMi = roundHalf(blockPeak * 0.68);
   } else {
-    // 10% increase per build week, capped at peak
-    longMi = roundHalf(Math.min(level.longStart * Math.pow(1.10, buildWeeks), level.longPeak));
+    // 10% increase per build week, capped at phase max first, then absolute peak
+    const rawLong   = roundHalf(Math.min(level.longStart * Math.pow(1.10, buildWeeks), level.longPeak));
+    const phaseCap  = PHASE_MAX_LONG[phase.name] ?? level.longPeak;
+    longMi = Math.min(rawLong, phaseCap);
   }
 
   // Easy and mid miles scale proportionally with long run progress
@@ -687,7 +705,7 @@ function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun, tr
   const easyMi = roundHalf(lerp(level.easyMiRange[0], level.easyMiRange[1], progressRatio));
   const midMi  = roundHalf(lerp(level.midMiRange[0],  level.midMiRange[1],  progressRatio));
 
-  return { longMi, easyMi, midMi, totalMi: computeTotal(longMi, easyMi, midMi), isCutback, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
+  return { longMi, easyMi, midMi, totalMi: computeTotal(longMi, easyMi, midMi), isCutback, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace, goalBracket };
 }
 
 function getCurrentWeekData(profile) {
@@ -953,8 +971,14 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal, 
     duration: `${longMi} mi`, miles: longMi
   };
 
-  // +1 Cross-Train
-  plan[slot(1)] = {
+  // +1 Cross-Train or Strength (depending on goal bracket)
+  // Sub-4 and faster: scheduled strength training reduces injury 33% and improves economy 2-8%
+  const useStrength = weekData.goalBracket === "sub-4" || weekData.goalBracket === "sub-3:30" || weekData.goalBracket === "sub-3";
+  plan[slot(1)] = useStrength ? {
+    idx: slot(1), day: DAYS[slot(1)], type: "Strength", zone: null,
+    notes: "Strength session — 30–45 min. Focus on single-leg stability and hip strength: single-leg deadlifts, step-ups, clamshells, hip bridges, planks, and rows. Your legs are tired from yesterday so keep loads moderate. Why: strength training reduces running injuries by 33% and improves running economy 2–8% — it belongs in every serious training plan.",
+    duration: "30–45 min", miles: 0
+  } : {
     idx: slot(1), day: DAYS[slot(1)], type: "Cross-Train", zone: "Recovery",
     notes: `Easy bike, swim, yoga, or walk${zrstr}. Move without pounding — your legs are still recovering from yesterday's long run. 30–45 min is plenty. Why: active recovery flushes soreness and drives blood to repair muscle without adding impact stress.`,
     duration: "30–45 min", miles: 0
