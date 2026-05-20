@@ -1,4 +1,4 @@
-// App.js — MyPaceZone
+// App.js — MyPaceZone v22
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE
@@ -623,25 +623,28 @@ function yassoTime(goalFinishStr) {
   return `${parts[0]}:${String(parts[1]).padStart(2, "0")}`;
 }
 
-function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun, trainingDays, goalBracket) {
+// prevLongMi  = the actual long run from last week (null for week 1)
+// lastBuildMi = the most recent NON-cutback long run (so post-cutback can resume at peak+1)
+function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun, trainingDays, goalBracket, prevLongMi, lastBuildMi) {
   const key   = normalizeFitnessLevel(fitnessLevel);
   const level = { ...PLAN_LEVELS[key] || PLAN_LEVELS.firstTimer };
   const days  = trainingDays || 4;
 
   // Finish-only goal: cap long run at 20 mi and disable fartlek progression
   if (goalBracket === "finish" || goalBracket === "sub-5") {
-    level.longPeak  = Math.min(level.longPeak, 20);
+    level.longPeak   = Math.min(level.longPeak, 20);
     level.hasFartlek = false;
   }
 
-  // If user told us their comfortable long run, use that as the starting point
-  // but never exceed what the fitness level says is appropriate
+  // Starting long run = comfortableLongRun (rounded to whole mile), floored at 1, capped at level's longStart
   if (comfortableLongRun && comfortableLongRun > 0) {
-    level.longStart = Math.min(comfortableLongRun, level.longStart);
+    level.longStart = Math.min(Math.round(comfortableLongRun), level.longStart);
   }
+  level.longStart = Math.max(1, Math.round(level.longStart));
+
   const phase = getPhase(weeksToRace);
 
-  // Helper: compute totalMi from component miles
+  // Helper: compute totalMi from component miles (halves OK for total weekly volume)
   const computeTotal = (lMi, eMi, mMi) => {
     const qMi = Math.max(eMi, mMi || eMi);
     if (days >= 6) return roundHalf(lMi + qMi + eMi * 3);
@@ -650,58 +653,59 @@ function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun, tr
     return roundHalf(lMi + qMi);
   };
 
-  // Phase-based long run ceiling — prevents premature plateau
-  // Long runs only reach their true peak in the Peak phase (weeks 5-8 before race)
+  // Phase-based long run ceiling — long runs only reach their true peak in Peak phase
   const PHASE_MAX_LONG = {
     "Foundation": 12,
     "Base":       15,
     "Build":      18,
-    "Peak":       level.longPeak   // full peak (20 mi) only in Peak phase
+    "Peak":       level.longPeak
   };
+  const phaseCap = PHASE_MAX_LONG[phase.name] ?? level.longPeak;
+
+  // Taper uses the athlete's actual peak reached (lastBuildMi), not the theoretical level peak.
+  // If lastBuildMi is unknown, fall back to level.longPeak.
+  const actualPeak = lastBuildMi || level.longPeak;
 
   // Race week: gentle shakeout
   if (weeksToRace <= 1) {
     return { longMi: 3, easyMi: 2, midMi: 0, totalMi: computeTotal(3, 2, 0), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
-  // 3-week taper (MH protocol: -10-15% / -45% / shakeout)
+  // 3-week taper — percentages of the highest long run the athlete actually reached
   if (weeksToRace === 2) {
-    // Deep taper — ~50% of peak long run, no quality, minimal miles
-    const lMi = roundHalf(level.longPeak * 0.50);
+    const lMi = Math.max(6, Math.round(actualPeak * 0.50));
     return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: 0, totalMi: computeTotal(lMi, level.easyMiRange[0], 0), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
   if (weeksToRace === 3) {
-    // Mid taper — ~70% of peak long run, light quality (strides only)
-    const lMi = roundHalf(level.longPeak * 0.70);
+    const lMi = Math.max(8, Math.round(actualPeak * 0.70));
     return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], totalMi: computeTotal(lMi, level.easyMiRange[0], level.midMiRange[0]), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
   if (weeksToRace === 4) {
-    // First taper week — ~85% of peak long run, maintain some quality to stay sharp
-    const lMi = roundHalf(level.longPeak * 0.85);
+    const lMi = Math.max(10, Math.round(actualPeak * 0.85));
     return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], totalMi: computeTotal(lMi, level.easyMiRange[0], level.midMiRange[0]), isCutback: false, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
   }
 
-  // 3:1 block progression with 10% rule
-  const blockNum  = Math.floor(weeksIn / 4);
+  // ── 3:1 block structure: 3 build weeks + 1 cutback ──
   const blockWeek = weeksIn % 4;
   const isCutback = blockWeek === 3;
 
-  // Build weeks elapsed (cutback weeks don't count as increases)
-  const buildWeeks = blockNum * 3 + Math.min(blockWeek, 2);
-
   let longMi;
   if (isCutback) {
-    // Cutback = 68% of that block's peak (~32% reduction, within MH's 25-40% range)
-    const blockPeak = roundHalf(Math.min(level.longStart * Math.pow(1.10, blockNum * 3 + 2), level.longPeak));
-    longMi = roundHalf(blockPeak * 0.68);
+    // Cutback = 75% of the actual peak just run (always whole miles)
+    const peakToUse = prevLongMi || level.longStart;
+    longMi = Math.max(level.longStart, Math.round(peakToUse * 0.75));
   } else {
-    // 10% increase per build week, capped at phase max first, then absolute peak
-    const rawLong   = roundHalf(Math.min(level.longStart * Math.pow(1.10, buildWeeks), level.longPeak));
-    const phaseCap  = PHASE_MAX_LONG[phase.name] ?? level.longPeak;
-    longMi = Math.min(rawLong, phaseCap);
+    // Build: +1 whole mile per week.
+    // After a cutback: resume from lastBuildMi + 1 (skip the cutback value — go straight back up)
+    // Normal build:    previous long + 1
+    const comingOffCutback = prevLongMi && lastBuildMi && prevLongMi < lastBuildMi;
+    const base = comingOffCutback ? lastBuildMi : (prevLongMi || level.longStart - 1);
+    longMi = Math.min(base + 1, phaseCap, level.longPeak);
+    // Week 1 (no history): start at longStart
+    if (!prevLongMi) longMi = level.longStart;
   }
 
-  // Easy and mid miles scale proportionally with long run progress
-  const progressRatio = (longMi - level.longStart) / Math.max(1, level.longPeak - level.longStart);
+  // Easy and mid miles scale proportionally with long run progress (halves fine for supporting runs)
+  const progressRatio = Math.max(0, Math.min(1, (longMi - level.longStart) / Math.max(1, level.longPeak - level.longStart)));
   const easyMi = roundHalf(lerp(level.easyMiRange[0], level.easyMiRange[1], progressRatio));
   const midMi  = roundHalf(lerp(level.midMiRange[0],  level.midMiRange[1],  progressRatio));
 
@@ -712,7 +716,18 @@ function getCurrentWeekData(profile) {
   const start       = profile.trainingStart || profile.createdAt;
   const weeksIn     = Math.max(0, Math.floor((Date.now() - new Date(start)) / (7 * 24 * 60 * 60 * 1000)));
   const weeksToRace = profile.raceDate ? weeksUntil(profile.raceDate) : 99;
-  return calcWeekData(profile.fitnessLevel, weeksIn, weeksToRace, profile.comfortableLongRun);
+  const totalWeeks  = weeksIn + weeksToRace;
+  // Iterate sequentially so prevLongMi / lastBuildMi are accurate for the +1 progression
+  let prevLong  = null;
+  let lastBuild = null;
+  let result    = null;
+  for (let w = 0; w <= Math.min(weeksIn, totalWeeks - 1); w++) {
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, profile.trainingDays || 4, profile.goalBracket || null, prevLong, lastBuild);
+    prevLong = wd.longMi;
+    if (!wd.isCutback && wd.weeksToRace > 4) lastBuild = wd.longMi;
+    if (w === weeksIn) result = wd;
+  }
+  return result || calcWeekData(profile.fitnessLevel, weeksIn, weeksToRace, profile.comfortableLongRun, profile.trainingDays || 4, profile.goalBracket || null);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1710,6 +1725,7 @@ function EditProfile() {
     const fitnessLevel  = document.getElementById("ep-level")?.value;
     const longRunDay    = parseInt(document.getElementById("ep-lrd")?.value);
     const trainingDays  = parseInt(document.getElementById("ep-days")?.value);
+    const comfortableLongRun = parseFloat(document.getElementById("ep-clr")?.value) || null;
     if (!name || !age || !weight || !restingHR) { showError("Please fill in all required fields."); return; }
     if (age < 18 || age > 95)                   { showError("Please enter a valid age (18–95)."); return; }
     if (restingHR < 35 || restingHR > 100)       { showError("Resting HR should be between 35–100 bpm."); return; }
@@ -1718,7 +1734,7 @@ function EditProfile() {
     if (!fitnessLevel)                           { showError("Please select your fitness level."); return; }
 
     setState({ loading: true });
-    const updated = { ...profile, name, age, heightFt, heightIn, weight, restingHR, raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays };
+    const updated = { ...profile, name, age, heightFt, heightIn, weight, restingHR, raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays, comfortableLongRun };
     await saveData("profile", updated);
 
     // Recalculate zones if age, resting HR, or knownMaxHR changed
@@ -1765,6 +1781,8 @@ function EditProfile() {
       ], normalizeFitnessLevel(profile?.fitnessLevel) || "")),
       field("Long Run Day", select("ep-lrd", DNAMES.map((d, i) => [d, i]), profile?.longRunDay ?? 6)),
       field("Training Days Per Week", select("ep-days", [[3,3],[4,4],[5,5],[6,6]].map(([l,v]) => [`${l} days`, v]), profile?.trainingDays || 4)),
+      field("Current comfortable long run (miles)", input({ id: "ep-clr", type: "number", placeholder: "e.g. 5 — the longest run you could do comfortably today", min: "1", max: "26", step: "0.5", value: String(profile?.comfortableLongRun || "") })),
+      el("p", { className: "field-hint" }, "This sets where your plan actually starts — not where the fitness level assumes. Be honest: the plan builds from here."),
       btn("Save Changes", save)
     )
   );
@@ -1992,7 +2010,7 @@ function SetupGoal() {
 
   return div("page",
     div("setup-page",
-      div("step-indicator", "Step 4 of 4 — Race Goal"),
+      div("step-indicator", "Step 5 of 5 — Race Goal"),
       h2("What's your goal pace?"),
       errorBanner(),
       !prediction && p("You haven't logged any workouts yet — we can't validate this against current fitness. You can update your goal any time."),
@@ -2550,11 +2568,15 @@ function buildPlanIndex(profile, zones, goal) {
   const goalBracket  = profile.goalBracket || null;
   const index        = {};
 
+  let prevLongIdx  = null;
+  let lastBuildIdx = null;
   for (let w = 0; w < totalWeeks; w++) {
     const weekSunday = new Date(week0Sunday);
     weekSunday.setDate(week0Sunday.getDate() + w * 7);
     const weekSundayStr = weekSunday.toISOString().split("T")[0];
-    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, trainingDays, goalBracket);
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, trainingDays, goalBracket, prevLongIdx, lastBuildIdx);
+    prevLongIdx = wd.longMi;
+    if (!wd.isCutback && wd.weeksToRace > 4) lastBuildIdx = wd.longMi;
     const plan = buildFlexibleWeekPlan(longRunDay, trainingDays, wd, zones, goal, weekSundayStr);
     for (const day of plan) {
       if (day.plannedDate) index[day.plannedDate] = day;
@@ -2727,8 +2749,12 @@ function renderPlanChart(profile, totalWeeks, currentWeekIdx) {
   const level = PLAN_LEVELS[key] || PLAN_LEVELS.firstTimer;
   const maxLong = level.longPeak;
 
+  let prevLong  = null;
+  let lastBuild = null;
   const weeks = Array.from({ length: totalWeeks }, (_, w) => {
-    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, profile.trainingDays || 4, profile.goalBracket || null);
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, profile.trainingDays || 4, profile.goalBracket || null, prevLong, lastBuild);
+    prevLong = wd.longMi;
+    if (!wd.isCutback && wd.weeksToRace > 4) lastBuild = wd.longMi;
     return { weekNum: w + 1, wd, isCurrent: w === currentWeekIdx };
   });
 
@@ -2761,8 +2787,12 @@ function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
   const week0Sunday = new Date(startDate);
   week0Sunday.setDate(week0Sunday.getDate() - week0Sunday.getDay());
 
+  let prevLong2  = null;
+  let lastBuild2 = null;
   const weeks = Array.from({ length: totalWeeks }, (_, w) => {
-    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, trainingDays, goalBracket);
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, trainingDays, goalBracket, prevLong2, lastBuild2);
+    prevLong2 = wd.longMi;
+    if (!wd.isCutback && wd.weeksToRace > 4) lastBuild2 = wd.longMi;
     const weekSunday = new Date(week0Sunday);
     weekSunday.setDate(week0Sunday.getDate() + w * 7);
     const weekSundayStr = weekSunday.toISOString().split("T")[0];
@@ -2790,9 +2820,10 @@ function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
           div("plan-week-days",
             w.plan.map(day => {
               const typeCls =
-                day.type === "Long Run"           ? "long"    :
-                day.type === "Cross-Train"        ? "cross"   :
-                day.type === "Rest"               ? "rest"    :
+                day.type === "Long Run"           ? "long"     :
+                day.type === "Cross-Train"        ? "cross"    :
+                day.type === "Strength"           ? "strength" :
+                day.type === "Rest"               ? "rest"     :
                 ["Fartlek","Light Fartlek","Structured Fartlek","Strides"].includes(day.type) ? "fartlek" :
                 ["Tempo Run","Race Pace Run","Yasso 800s","Easy Shakeout"].includes(day.type)  ? "quality" :
                 "easy";
@@ -2800,6 +2831,7 @@ function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
               const cellLabel =
                 day.type === "Long Run"        ? `Long\n${w.wd.longMi} mi` :
                 day.type === "Cross-Train"     ? "X-Train"                 :
+                day.type === "Strength"        ? "Strength"                :
                 day.type === "Rest"            ? "Rest"                    :
                 day.type === "Base Run"        ? `Base${shortMi}`          :
                 day.type === "Fartlek"         ? `Fartlek${shortMi}`       :
