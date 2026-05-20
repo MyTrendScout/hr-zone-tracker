@@ -933,6 +933,66 @@ ol li { margin-bottom: 6px; }
 }
 .btn-strava-import-one:hover { opacity: 0.88; }
 
+/* ── Goal Update coaching view ── */
+.goal-update-card {}
+.goal-update-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f0f7ff;
+  border: 1px solid #c8dff8;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+.goal-update-current-label {
+  font-size: 13px;
+  color: #666;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.goal-update-current-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1a56db;
+}
+.goal-update-section {
+  border-top: 1px solid #f0f0f0;
+  padding-top: 16px;
+  margin-top: 4px;
+}
+.goal-update-section h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: #222;
+}
+.goal-update-hint {
+  font-size: 13px;
+  color: #777;
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+.goal-update-insight {
+  background: linear-gradient(135deg, #f0f9f4 0%, #e8f5e9 100%);
+  border: 1px solid #a5d6b5;
+  border-left: 4px solid #2e7d32;
+  border-radius: 8px;
+  padding: 14px 16px;
+  font-size: 14px;
+  color: #1b5e20;
+  line-height: 1.6;
+  margin: 16px 0;
+}
+.goal-update-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
+  border-top: 1px solid #f0f0f0;
+  padding-top: 20px;
+}
+
 /* ── Mobile ── */
 @media (max-width: 480px) {
   .stat-row { flex-wrap: wrap; }

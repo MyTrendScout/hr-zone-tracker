@@ -1193,6 +1193,7 @@ function getView() {
     case "setup-prefs":    return SetupPrefs();
     case "setup-goal":     return SetupGoal();
     case "update-plan":    return UpdatePlanPage();
+    case "goal-update":    return GoalUpdate();
     case "edit-profile":   return EditProfile();
     case "log-workout":    return LogWorkout();
     case "history":        return WorkoutHistory();
@@ -1709,7 +1710,6 @@ function EditProfile() {
     const fitnessLevel  = document.getElementById("ep-level")?.value;
     const longRunDay    = parseInt(document.getElementById("ep-lrd")?.value);
     const trainingDays  = parseInt(document.getElementById("ep-days")?.value);
-
     if (!name || !age || !weight || !restingHR) { showError("Please fill in all required fields."); return; }
     if (age < 18 || age > 95)                   { showError("Please enter a valid age (18–95)."); return; }
     if (restingHR < 35 || restingHR > 100)       { showError("Resting HR should be between 35–100 bpm."); return; }
@@ -1794,6 +1794,180 @@ function UpdatePlanPage() {
       ], normalizeFitnessLevel(state.profile?.fitnessLevel) || "")),
       field("Training Start Date *", input({ id: "up-start", type: "date", value: state.profile?.trainingStart || today })),
       btn("Save & Rebuild Plan", save)
+    )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GOAL UPDATE — coaching conversation
+// ═══════════════════════════════════════════════════════════════
+function GoalUpdate() {
+  const { profile } = state;
+  const currentBracket = profile?.goalBracket || "";
+
+  const BRACKET_LABELS = {
+    "finish":    "Finish — I just want to cross the line",
+    "sub-5":     "Sub-5:00 (11:27/mi)",
+    "sub-4:30":  "Sub-4:30 (10:18/mi)",
+    "sub-4":     "Sub-4:00 (9:09/mi)",
+    "sub-3:30":  "Sub-3:30 (8:00/mi)",
+    "sub-3":     "Sub-3:00 (6:52/mi)"
+  };
+
+  const COACHING_INSIGHTS = {
+    // driving + training + physical → advice string
+    "stronger+on-track+fresh":    "You're firing on all cylinders — a stretch goal makes sense. Just make sure the plan adjusts quality work proportionally.",
+    "stronger+on-track+tired":    "Strong motivation + good mileage, but your body needs recovery. Hold the new goal but prioritize sleep and easy days this week.",
+    "stronger+more+fresh":        "Running more AND feeling fresh is rare — make sure the extra volume is easy miles, not junk miles. A bump up looks well-earned.",
+    "stronger+more+tired":        "More volume plus fatigue — be careful. A modest goal bump is fine, but a down week first will pay off.",
+    "stronger+less+fresh":        "Feeling strong despite lower mileage? Trust that instinct, but rebuild gradually before committing to a faster goal.",
+    "stronger+less+tired":        "Mixed signals — motivation is up but training and body aren't aligned. Consider holding your current goal for 2 more weeks, then reassess.",
+    "new-race+on-track+fresh":    "New race, solid training, fresh legs — great spot to lock in a goal. Your current fitness will carry you there.",
+    "new-race+on-track+tired":    "New race energy is real, but your body is talking. Rest now so you're sharp when it counts.",
+    "new-race+more+fresh":        "Building well for a new race — a goal in the middle of your bracket range is a smart anchor.",
+    "new-race+more+tired":        "Excitement for a new race is great, but back off the volume slightly. Consistency beats hero weeks.",
+    "new-race+less+fresh":        "Lower mileage but feeling good — a conservative goal protects the race experience. You can always negative split.",
+    "new-race+less+tired":        "New race + low mileage + fatigue — make sure the goal is realistic. An honest finish goal sets you up to love the sport.",
+    "setback+on-track+fresh":     "Back on track after a setback and feeling fresh — that's resilience. A modest goal reset keeps momentum without over-promising.",
+    "setback+on-track+tired":     "Coming back from a setback while tired — the plan is solid, but add one extra rest day this week.",
+    "setback+more+fresh":         "Running strong after a setback is encouraging. Make sure the extra mileage isn't compensating — easy pace first.",
+    "setback+more+tired":         "After a setback, more mileage + fatigue is a yellow flag. Drop back to your base target and rebuild.",
+    "setback+less+fresh":         "Feeling okay despite lower mileage — that's a body that's healed. A conservative goal keeps confidence high.",
+    "setback+less+tired":         "Setback + lower mileage + fatigue: your body is asking for more time. A finish goal this race protects your long-term running.",
+    "advisor+on-track+fresh":     "Coached change + solid training + fresh body — a well-supported goal shift. Trust the process.",
+    "advisor+on-track+tired":     "Your advisor sees something you might not. Combine their guidance with an honest check-in on fatigue this week.",
+    "advisor+more+fresh":         "More volume on your advisor's plan and feeling good — this is how breakthroughs happen.",
+    "advisor+more+tired":         "Advisor-driven and putting in the miles, but your body is tired. Communicate the fatigue — a great coach adjusts.",
+    "advisor+less+fresh":         "Advisor tweaked the goal on lower mileage, but you feel fresh — trust that recovery is working.",
+    "advisor+less+tired":         "Lower mileage, fatigue, and a new advisor goal — make sure the adjustment is intentional, not reactive. A down week may be prescribed.",
+
+    // beaten-up physical state — always a caution message
+    "stronger+on-track+beaten":   "Something hurts — even with strong motivation and solid training, racing through pain rarely ends well. See a physio before committing to a faster goal.",
+    "stronger+more+beaten":       "Beaten up while running more? This is overuse territory. Pull back the volume, address the pain, then revisit the goal.",
+    "stronger+less+beaten":       "Lower volume but still hurting — your body needs a rest block before a goal change makes sense.",
+    "new-race+on-track+beaten":   "New race excitement is real, but racing injured is a bigger gamble than a conservative goal. Get the pain assessed first.",
+    "new-race+more+beaten":       "New race + extra volume + pain = injury waiting to happen. Take a down week, see a physio, then lock in a goal.",
+    "new-race+less+beaten":       "New race on the calendar, but you're hurting — a finish goal protects your ability to toe the line at all.",
+    "setback+on-track+beaten":    "Coming back from a setback while still in pain suggests incomplete recovery. Prioritize healing over the goal bracket.",
+    "setback+more+beaten":        "More mileage than planned and beaten up after a setback — this is a red flag. Ease off and let your body catch up.",
+    "setback+less+beaten":        "Low mileage, a setback, and ongoing pain — a finish goal is the right call. Get to the start line healthy.",
+    "advisor+on-track+beaten":    "Your advisor should know you're in pain. Communicate it — no plan survives contact with injury.",
+    "advisor+more+beaten":        "Running your advisor's plan but hurting — flag this at your next check-in. Pain always overrides the program.",
+    "advisor+less+beaten":        "Below target mileage and beaten up — rest is the training right now. Your goal will wait."
+  };
+
+  const save = async () => {
+    const newBracket  = document.getElementById("gu-bracket")?.value;
+    const driving     = document.getElementById("gu-driving")?.value;
+    const training    = document.getElementById("gu-training")?.value;
+    const physical    = document.getElementById("gu-physical")?.value;
+
+    if (!newBracket)  { showError("Please select a goal bracket."); return; }
+    if (!driving)     { showError("Tell us what's driving this change."); return; }
+    if (!training)    { showError("Tell us how training has been going."); return; }
+    if (!physical)    { showError("Tell us how you feel physically."); return; }
+
+    setState({ loading: true });
+    const updated = {
+      ...profile,
+      goalBracket: newBracket,
+      goalChangeContext: { driving, training, physical, changedAt: new Date().toISOString() }
+    };
+    await saveData("profile", updated);
+    setState({ profile: updated, loading: false, view: "dashboard", error: null });
+  };
+
+  // Compute live coaching insight from current dropdown values
+  const getInsight = () => {
+    const d = document.getElementById("gu-driving")?.value;
+    const t = document.getElementById("gu-training")?.value;
+    const p = document.getElementById("gu-physical")?.value;
+    if (!d || !t || !p) return null;
+    return COACHING_INSIGHTS[`${d}+${t}+${p}`] || null;
+  };
+
+  const insightId = "gu-insight";
+  const updateInsight = () => {
+    const box = document.getElementById(insightId);
+    if (!box) return;
+    const msg = getInsight();
+    box.textContent = msg || "";
+    box.style.display = msg ? "block" : "none";
+  };
+
+  // Wire up live insight on change
+  setTimeout(() => {
+    ["gu-driving", "gu-training", "gu-physical"].forEach(id => {
+      const el2 = document.getElementById(id);
+      if (el2) el2.addEventListener("change", updateInsight);
+    });
+  }, 0);
+
+  const currentLabel = BRACKET_LABELS[currentBracket];
+
+  return div("page",
+    div("card goal-update-card",
+      pageHeader("Update Your Race Goal", () => setState({ view: "dashboard" })),
+      errorBanner(),
+
+      currentBracket
+        ? div("goal-update-current",
+            el("span", { className: "goal-update-current-label" }, "Current goal:"),
+            el("span", { className: "goal-update-current-value" }, currentLabel || currentBracket)
+          )
+        : p("You haven't set a goal bracket yet — let's do that now."),
+
+      div("goal-update-section",
+        h3("What's your new goal?"),
+        el("p", { className: "goal-update-hint" }, "Be honest with yourself — the right goal for where you are now beats an aspirational goal that breaks you."),
+        field("Race goal bracket", select("gu-bracket", [
+          ["Select a goal…", ""],
+          ["Finish — I just want to cross the line", "finish"],
+          ["Sub-5:00 (11:27/mi)", "sub-5"],
+          ["Sub-4:30 (10:18/mi)", "sub-4:30"],
+          ["Sub-4:00 (9:09/mi)",  "sub-4"],
+          ["Sub-3:30 (8:00/mi)",  "sub-3:30"],
+          ["Sub-3:00 (6:52/mi)",  "sub-3"]
+        ], currentBracket))
+      ),
+
+      div("goal-update-section",
+        h3("What's driving this change?"),
+        field("", select("gu-driving", [
+          ["Select one…", ""],
+          ["I've been feeling stronger lately", "stronger"],
+          ["New race on the calendar", "new-race"],
+          ["Injury, illness, or setback", "setback"],
+          ["My coach or advisor suggested it", "advisor"]
+        ], ""))
+      ),
+
+      div("goal-update-section",
+        h3("How has training been going?"),
+        field("", select("gu-training", [
+          ["Select one…", ""],
+          ["On track — hitting most sessions", "on-track"],
+          ["Running more than planned", "more"],
+          ["Running less than planned", "less"]
+        ], ""))
+      ),
+
+      div("goal-update-section",
+        h3("How do you feel physically right now?"),
+        field("", select("gu-physical", [
+          ["Select one…", ""],
+          ["Fresh and ready to push", "fresh"],
+          ["Tired but managing fine", "tired"],
+          ["Beaten up — something hurts", "beaten"]
+        ], ""))
+      ),
+
+      el("div", { id: insightId, className: "goal-update-insight", style: "display:none" }, ""),
+
+      div("goal-update-actions",
+        btn("Save Goal & Rebuild Plan", save),
+        btn("Cancel", () => setState({ view: "dashboard", error: null }), "btn-secondary")
+      )
     )
   );
 }
@@ -1956,6 +2130,7 @@ function Dashboard() {
       btn("Log a Workout",          () => setState({ view: "log-workout" })),
       btn("View Workout History",   () => setState({ view: "history" })),
       btn("View Full Training Plan",() => setState({ view: "plan" })),
+      btn("Update My Race Goal", () => setState({ view: "goal-update" }), "btn-secondary"),
       btn("Update Fitness Level / Rebuild Plan", () => setState({ view: "update-plan" }), "btn-secondary"),
       btn("Edit Profile & Plan Settings", () => setState({ view: "edit-profile" }), "btn-secondary")
     ),
