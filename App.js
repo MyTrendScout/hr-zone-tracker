@@ -1,4 +1,4 @@
-// App.js — MyPaceZone
+// App.js — MyPaceZone v24
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE
@@ -69,6 +69,13 @@ function setState(updates) {
 async function hashPassword(str) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PROMISE HELPERS
+// ═══════════════════════════════════════════════════════════════
+function withTimeout(promise, ms, msg) {
+  return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error(msg || "Connection timed out.")), ms))]);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -212,19 +219,47 @@ async function stravaDisconnect() {
   setState({ stravaTokens: null, stravaActivities: null });
 }
 
+async function fetchStravaActivityDetail(token, activityId) {
+  try {
+    const resp = await fetch(
+      `https://www.strava.com/api/v3/activities/${activityId}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    return await resp.json();
+  } catch (err) {
+    return null;
+  }
+}
+
 async function fetchStravaActivities() {
   setState({ stravaLoading: true });
   try {
     const token = await stravaGetValidToken();
     if (!token) { setState({ stravaLoading: false, error: "Strava token invalid. Please reconnect." }); return; }
+
+    // Step 1 — fetch activity list
     const resp = await fetch(
       "https://www.strava.com/api/v3/athlete/activities?per_page=30&page=1",
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const all = await resp.json();
     if (!Array.isArray(all)) { setState({ stravaLoading: false, error: "Strava returned an unexpected response." }); return; }
-    const runs = all.filter(a => a.type === "Run" || a.sport_type === "Run");
-    setState({ stravaActivities: runs, stravaLoading: false, view: "strava-import" });
+
+    // Step 2 — fetch full details for each activity (gets per-mile splits with HR)
+    // Throttle to avoid rate limit — fetch in batches of 5
+    const detailed = [];
+    for (let i = 0; i < all.length; i += 5) {
+      const batch = all.slice(i, i + 5);
+      const results = await Promise.all(
+        batch.map(a => fetchStravaActivityDetail(token, a.id))
+      );
+      results.forEach((detail, idx) => {
+        // Merge detail data over summary — fall back to summary if detail failed
+        detailed.push(detail && !detail.errors ? { ...batch[idx], ...detail } : batch[idx]);
+      });
+    }
+
+    setState({ stravaActivities: detailed, stravaLoading: false, view: "strava-import" });
   } catch (err) {
     setState({ stravaLoading: false, error: "Could not fetch Strava activities: " + err.message });
   }
@@ -243,9 +278,36 @@ function stravaToWorkout(activity) {
                     Workout: "Strength", Hike: "Walk" };
   const type = typeMap[sportType] || "Run";
 
+  // Extract per-mile splits from detail data (splits_standard = imperial/miles)
+  // Each split has: distance, elapsed_time, moving_time, average_speed, average_heartrate, pace_zone
+  let splits = null;
+  let splitHRs = null;
+  if (activity.splits_standard && Array.isArray(activity.splits_standard) && activity.splits_standard.length > 0) {
+    const validSplits = activity.splits_standard.filter(s => s.moving_time > 0);
+    if (validSplits.length > 0) {
+      // Format splits as pace string per mile e.g. "9:10, 9:25, 9:05"
+      splits = validSplits.map(s => {
+        const distMi = s.distance / 1609.344;
+        if (distMi < 0.1) return null;
+        const paceDecimal = (s.moving_time / 60) / distMi;
+        const pMin = Math.floor(paceDecimal);
+        const pSec = Math.round((paceDecimal - pMin) * 60);
+        return `${pMin}:${String(pSec).padStart(2, "0")}`;
+      }).filter(Boolean).join(", ");
+
+      // Store per-mile avg HR array for evaluation
+      splitHRs = validSplits
+        .map(s => s.average_heartrate ? Math.round(s.average_heartrate) : null)
+        .filter(Boolean);
+      if (splitHRs.length === 0) splitHRs = null;
+    }
+  }
+
   const base = {
     date: dateStr, type, durationSec: durSec,
     avgHR, maxHR, notes: activity.name || "",
+    splits: splits || null,
+    splitHRs: splitHRs || null,
     source: "strava", stravaId: activity.id, loggedAt: new Date().toISOString()
   };
 
@@ -327,14 +389,43 @@ function estimateMaxHR(age) {
   return Math.round(207 - (0.7 * age));
 }
 
+// ── Karvonen-based threshold zone calculation ──────────────────
+// Threshold = 0.81 × (MaxHR - RestingHR) + RestingHR
+// Run zones calculated as % of HRR + RestingHR
+// Bike zones = Run zones - 11 bpm across the board
+// Gap between ZR and Z1 is intentional — not a valid training zone
 function calcZones(maxHR, restingHR) {
-  const hrr = maxHR - restingHR;
-  const z = (lo, hi) => ({ low: Math.round(restingHR + lo * hrr), high: Math.round(restingHR + hi * hrr) });
+  const hrr       = maxHR - restingHR;
+  const threshold = Math.round(0.81 * hrr + restingHR);
+  const r = (lo, hi) => ({ low: Math.round(restingHR + lo * hrr), high: Math.round(restingHR + hi * hrr) });
+
+  // Run zones
+  const runZR = r(0.50, 0.62);
+  const runZ1 = r(0.66, 0.74);
+  const runZ2 = r(0.74, 0.82);
+  const runZ3 = r(0.82, 0.90);
+
+  // Bike zones = run zones - 11 bpm
+  const bikeZR = { low: runZR.low - 11, high: runZR.high - 11 };
+  const bikeZ1 = { low: runZ1.low - 11, high: runZ1.high - 11 };
+  const bikeZ2 = { low: runZ2.low - 11, high: runZ2.high - 11 };
+  const bikeZ3 = { low: runZ3.low - 11, high: runZ3.high - 11 };
+
   return {
-    maxHR, restingHR, hrr,
-    z1: { name: "Recovery", ...z(0.50, 0.65), desc: "Very easy. Full sentences. Warm-up, cool-down, rest days." },
-    z2: { name: "Base",     ...z(0.65, 0.80), desc: "Comfortable. Can talk in sentences. Your aerobic engine." },
-    z3: { name: "Speed",    ...z(0.80, 0.92), desc: "Hard. Few words only. Tempo and threshold work." }
+    maxHR, restingHR, hrr, threshold,
+    // Run zones
+    zr: { name: "Recovery", ...runZR, desc: "Very easy. Full sentences. Warm-up, cool-down, rest days." },
+    z1: { name: "Zone 1",   ...runZ1, desc: "Comfortable. Start here, build through the mile. Your aerobic base." },
+    z2: { name: "Zone 2",   ...runZ2, desc: "Controlled effort. Negative split territory. Aerobic engine building." },
+    z3: { name: "Zone 3",   ...runZ3, desc: "Hard. Few words only. Sub-threshold. Race pace work." },
+    // Bike zones (cross-train days)
+    bikeZr: { name: "Recovery", ...bikeZR, desc: "Very easy spin. Active recovery only." },
+    bikeZ1: { name: "Zone 1",   ...bikeZ1, desc: "Comfortable aerobic ride. Endurance base." },
+    bikeZ2: { name: "Zone 2",   ...bikeZ2, desc: "Controlled effort on the bike." },
+    bikeZ3: { name: "Zone 3",   ...bikeZ3, desc: "Hard effort. Sub-threshold riding." },
+    // Gap range (intentional — no valid training zone)
+    gapLow:  runZR.high + 1,
+    gapHigh: runZ1.low - 1
   };
 }
 
@@ -372,11 +463,13 @@ const PLAN_LEVELS = {
   competitive: {
     label: "Competitive — chasing a time goal",
     desc:  "Speed work, tempo runs, and peak mileage. Racing to a PR.",
-    longStart: 10, longPeak: 22,
+    longStart: 10, longPeak: 20,
     easyMiRange: [5, 8], midMiRange: [6, 10],
     hasFartlek: true
   }
 };
+
+const PLAN_LEVEL_OPTIONS = Object.entries(PLAN_LEVELS).map(([k, v]) => [v.label, k]);
 
 function riegelPredict(timeSec, distMi, targetMi) {
   return timeSec * Math.pow(targetMi / distMi, 1.06);
@@ -456,6 +549,52 @@ function validateGoal(targetPaceStr, predictedSec) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// PLAN LENGTH RECOMMENDATION
+// ═══════════════════════════════════════════════════════════════
+function recommendedPlanWeeks(weeklyMileage, fitnessLevel, marathonHistory) {
+  const key = normalizeFitnessLevel(fitnessLevel);
+  const mi  = weeklyMileage || 0;
+  if (mi < 15 || key === "scratch" || marathonHistory === "first") return { min: 20, max: 24 };
+  if (mi < 25) return { min: 18, max: 20 };
+  if (mi < 35) return { min: 16, max: 18 };
+  return { min: 12, max: 16 };
+}
+
+function planLengthWarning(profile) {
+  if (!profile?.raceDate) return null;
+  const rec = recommendedPlanWeeks(profile.weeklyMileage, profile.fitnessLevel, profile.marathonHistory);
+  const actual = Math.round((new Date(profile.raceDate + "T12:00:00") - new Date()) / (1000 * 60 * 60 * 24 * 7));
+  if (actual < rec.min) {
+    return `Your race is ${actual} weeks away but your profile suggests ${rec.min}–${rec.max} weeks of preparation. Consider adjusting your goal or race date.`;
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ZONE BOUND RESOLVER  (maps plan zone strings → bpm ranges)
+// ═══════════════════════════════════════════════════════════════
+function resolveZoneBounds(zoneStr, zones) {
+  if (!zones || !zoneStr) return { low: null, high: null };
+  switch (zoneStr) {
+    case "Recovery": return { low: zones.zr?.low,  high: zones.zr?.high  };
+    case "Z1":       return { low: zones.z1?.low,  high: zones.z1?.high  };
+    case "Z1→Z2":    // long run (drift ok into Z2) — full band Z1.low → Z2.high
+    case "Z1–Z2":    return { low: zones.z1?.low,  high: zones.z2?.high  };
+    case "Z2":       return { low: zones.z2?.low,  high: zones.z2?.high  };
+    case "Z2–Z3":    return { low: zones.z2?.low,  high: zones.z3?.high  };
+    case "Z3":       return { low: zones.z3?.low,  high: zones.z3?.high  };
+    default:         return { low: null, high: null };
+  }
+}
+
+// Convert "YYYY-MM-DD" weekSunday + dayIndex (0=Sun) → "YYYY-MM-DD"
+function isoFromWeekStart(weekSundayStr, dayIdx) {
+  const d = new Date(weekSundayStr + "T12:00:00");
+  d.setDate(d.getDate() + dayIdx);
+  return d.toISOString().split("T")[0];
+}
+
+// ═══════════════════════════════════════════════════════════════
 // TRAINING PLAN ENGINE
 // ═══════════════════════════════════════════════════════════════
 const DAYS   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
@@ -467,10 +606,10 @@ function weeksUntil(dateStr) {
 
 function getPhase(weeksToRace) {
   if (weeksToRace <= 1)  return { name: "Race Week",   note: "Rest, hydrate, believe. You are ready." };
-  if (weeksToRace <= 3)  return { name: "Taper",       note: "Cut volume, keep sharpness. Rest is training." };
-  if (weeksToRace <= 7)  return { name: "Peak",        note: "Your hardest weeks. Trust the process. This is where it comes together." };
-  if (weeksToRace <= 14) return { name: "Build",       note: "Add quality runs. Long runs grow each week. Consistency beats intensity." };
-  if (weeksToRace <= 20) return { name: "Base",        note: "Easy miles. Build your aerobic engine. Nothing heroic yet." };
+  if (weeksToRace <= 4)  return { name: "Taper",       note: "Cut volume, keep sharpness. Rest is training." };
+  if (weeksToRace <= 8)  return { name: "Peak",        note: "Your hardest weeks. Trust the process. This is where it comes together." };
+  if (weeksToRace <= 15) return { name: "Build",       note: "Add quality runs. Long runs grow each week. Consistency beats intensity." };
+  if (weeksToRace <= 21) return { name: "Base",        note: "Easy miles. Build your aerobic engine. Nothing heroic yet." };
   return                         { name: "Foundation", note: "Establish the habit. Every run matters. Keep it easy and stay consistent." };
 }
 
@@ -493,72 +632,129 @@ function yassoTime(goalFinishStr) {
   return `${parts[0]}:${String(parts[1]).padStart(2, "0")}`;
 }
 
-function calcWeekData(fitnessLevel, weeksIn, weeksToRace) {
+// prevLongMi  = the actual long run from last week (null for week 1)
+// lastBuildMi = the most recent NON-cutback long run (so post-cutback can resume at peak+1)
+function calcWeekData(fitnessLevel, weeksIn, weeksToRace, comfortableLongRun, trainingDays, goalBracket, prevLongMi, lastBuildMi) {
   const key   = normalizeFitnessLevel(fitnessLevel);
-  const level = PLAN_LEVELS[key] || PLAN_LEVELS.firstTimer;
+  const level = { ...PLAN_LEVELS[key] || PLAN_LEVELS.firstTimer };
+  const days  = trainingDays || 4;
+
+  // Finish-only goal: cap long run at 20 mi and disable fartlek progression
+  if (goalBracket === "finish" || goalBracket === "sub-5") {
+    level.longPeak   = Math.min(level.longPeak, 20);
+    level.hasFartlek = false;
+  }
+
+  // Starting long run = comfortableLongRun (rounded to whole mile), floored at 1, capped at level's longStart
+  if (comfortableLongRun && comfortableLongRun > 0) {
+    level.longStart = Math.min(Math.round(comfortableLongRun), level.longStart);
+  }
+  level.longStart = Math.max(1, Math.round(level.longStart));
+
   const phase = getPhase(weeksToRace);
+
+  // Helper: compute totalMi from component miles (halves OK for total weekly volume)
+  const computeTotal = (lMi, eMi, mMi) => {
+    const qMi = Math.max(eMi, mMi || eMi);
+    if (days >= 6) return roundHalf(lMi + qMi + eMi * 3);
+    if (days >= 5) return roundHalf(lMi + qMi + eMi * 2);
+    if (days >= 4) return roundHalf(lMi + qMi + eMi);
+    return roundHalf(lMi + qMi);
+  };
+
+  // Phase-based long run ceiling — long runs only reach their true peak in Peak phase
+  const PHASE_MAX_LONG = {
+    "Foundation": 12,
+    "Base":       15,
+    "Build":      18,
+    "Peak":       level.longPeak
+  };
+  const phaseCap = PHASE_MAX_LONG[phase.name] ?? level.longPeak;
+
+  // Taper uses the athlete's actual peak reached (lastBuildMi), not the theoretical level peak.
+  // If lastBuildMi is unknown, fall back to level.longPeak.
+  const actualPeak = lastBuildMi || level.longPeak;
 
   // Race week: gentle shakeout
   if (weeksToRace <= 1) {
-    return { longMi: 3, easyMi: 2, midMi: 0, isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
+    return { longMi: 3, easyMi: 2, midMi: 0, totalMi: computeTotal(3, 2, 0), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
-  // Taper
+  // 3-week taper — percentages of the highest long run the athlete actually reached
   if (weeksToRace === 2) {
-    return { longMi: roundHalf(level.longPeak * 0.55), easyMi: level.easyMiRange[0], midMi: 0, isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
+    const lMi = Math.max(6, Math.round(actualPeak * 0.50));
+    return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: 0, totalMi: computeTotal(lMi, level.easyMiRange[0], 0), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
   }
   if (weeksToRace === 3) {
-    return { longMi: roundHalf(level.longPeak * 0.75), easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], isCutback: false, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
+    const lMi = Math.max(8, Math.round(actualPeak * 0.70));
+    return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], totalMi: computeTotal(lMi, level.easyMiRange[0], level.midMiRange[0]), isCutback: false, phase, hasFartlek: false, levelKey: key, weeksToRace };
+  }
+  if (weeksToRace === 4) {
+    const lMi = Math.max(10, Math.round(actualPeak * 0.85));
+    return { longMi: lMi, easyMi: level.easyMiRange[0], midMi: level.midMiRange[0], totalMi: computeTotal(lMi, level.easyMiRange[0], level.midMiRange[0]), isCutback: false, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
   }
 
-  // 3:1 block progression with 10% rule
-  const blockNum  = Math.floor(weeksIn / 4);
+  // ── 3:1 block structure: 3 build weeks + 1 cutback ──
   const blockWeek = weeksIn % 4;
   const isCutback = blockWeek === 3;
 
-  // Build weeks elapsed (cutback weeks don't count as increases)
-  const buildWeeks = blockNum * 3 + Math.min(blockWeek, 2);
-
   let longMi;
   if (isCutback) {
-    // Cutback = 72% of that block's peak (week 3 of the block)
-    const blockPeak = roundHalf(Math.min(level.longStart * Math.pow(1.10, blockNum * 3 + 2), level.longPeak));
-    longMi = roundHalf(blockPeak * 0.72);
+    // Cutback = 75% of the actual peak just run (always whole miles)
+    const peakToUse = prevLongMi || level.longStart;
+    longMi = Math.max(level.longStart, Math.round(peakToUse * 0.75));
   } else {
-    // 10% increase per build week, capped at peak
-    longMi = roundHalf(Math.min(level.longStart * Math.pow(1.10, buildWeeks), level.longPeak));
+    // Build: +1 whole mile per week.
+    // After a cutback: resume from lastBuildMi + 1 (skip the cutback value — go straight back up)
+    // Normal build:    previous long + 1
+    const comingOffCutback = prevLongMi && lastBuildMi && prevLongMi < lastBuildMi;
+    const base = comingOffCutback ? lastBuildMi : (prevLongMi || level.longStart - 1);
+    longMi = Math.min(base + 1, phaseCap, level.longPeak);
+    // Week 1 (no history): start at longStart
+    if (!prevLongMi) longMi = level.longStart;
   }
 
-  // Easy and mid miles scale proportionally with long run progress
-  const progressRatio = (longMi - level.longStart) / Math.max(1, level.longPeak - level.longStart);
+  // Easy and mid miles scale proportionally with long run progress (halves fine for supporting runs)
+  const progressRatio = Math.max(0, Math.min(1, (longMi - level.longStart) / Math.max(1, level.longPeak - level.longStart)));
   const easyMi = roundHalf(lerp(level.easyMiRange[0], level.easyMiRange[1], progressRatio));
   const midMi  = roundHalf(lerp(level.midMiRange[0],  level.midMiRange[1],  progressRatio));
 
-  return { longMi, easyMi, midMi, isCutback, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace };
+  return { longMi, easyMi, midMi, totalMi: computeTotal(longMi, easyMi, midMi), isCutback, phase, hasFartlek: level.hasFartlek, levelKey: key, weeksToRace, goalBracket };
 }
 
 function getCurrentWeekData(profile) {
   const start       = profile.trainingStart || profile.createdAt;
   const weeksIn     = Math.max(0, Math.floor((Date.now() - new Date(start)) / (7 * 24 * 60 * 60 * 1000)));
   const weeksToRace = profile.raceDate ? weeksUntil(profile.raceDate) : 99;
-  return calcWeekData(profile.fitnessLevel, weeksIn, weeksToRace);
+  const totalWeeks  = weeksIn + weeksToRace;
+  // Iterate sequentially so prevLongMi / lastBuildMi are accurate for the +1 progression
+  let prevLong  = null;
+  let lastBuild = null;
+  let result    = null;
+  for (let w = 0; w <= Math.min(weeksIn, totalWeeks - 1); w++) {
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, profile.trainingDays || 4, profile.goalBracket || null, prevLong, lastBuild);
+    prevLong = wd.longMi;
+    if (!wd.isCutback && wd.weeksToRace > 4) lastBuild = wd.longMi;
+    if (w === weeksIn) result = wd;
+  }
+  return result || calcWeekData(profile.fitnessLevel, weeksIn, weeksToRace, profile.comfortableLongRun, profile.trainingDays || 4, profile.goalBracket || null);
 }
 
 // ─────────────────────────────────────────────────────────────
 // Long run notes — always slow and steady, never race pace finish
 // ─────────────────────────────────────────────────────────────
 function buildLongRunNotes(phaseName, longMi, isCutback, z1, z2) {
-  const z1str = z1 ? ` (target ${z1.label})` : " (Zone 1)";
-  const z2str = z2 ? ` (target ${z2.label})` : " (Zone 2)";
+  const z1str = z1 ? ` (${z1.label})` : " (Zone 1)";
+  const z2str = z2 ? ` (${z2.label})` : " (Zone 2)";
   if (phaseName === "Race Week") {
-    return `Short shakeout — 3 mi max. Easy, easy, easy${z1str}. Just wake up the legs. No need to prove anything today.`;
+    return `Short shakeout — 3 mi max. Start in Recovery, stay easy${z1str}. Just wake up the legs. No need to prove anything today.`;
   }
   if (phaseName === "Taper") {
-    return `${longMi} mi — your last long run before race day. Start slow, stay slow${z1str}. Finish feeling like you could have done more. Do NOT pick up the pace at the end — save it.`;
+    return `${longMi} mi — your last long run before race day. First mile in Recovery, settle into Zone 1${z1str}. Finish feeling like you could have done more. Do NOT pick up the pace — save it for race day.`;
   }
   if (isCutback) {
-    return `${longMi} mi — recovery week long run. Back off the effort. Stay in Z1${z1str} the whole time. Your body is consolidating 3 weeks of training. Run relaxed and enjoy the easier day.`;
+    return `${longMi} mi — recovery week long run. First mile in Recovery, stay in Zone 1${z1str} the whole time. Your body is consolidating 3 weeks of training. Run relaxed and enjoy the easier day.`;
   }
-  return `${longMi} mi long run. Start in Z1${z1str}, settle into Z2${z2str} by mile 2–3, and hold there. If HR drifts above Z2, slow down or walk briefly. Finish at the same pace you started — never pick it up at the end. Why: the long run builds your aerobic engine and fat-burning capacity. Slow IS the workout.`;
+  return `${longMi} mi long run. Try to keep mile 1 in Recovery — let your body warm up naturally. Build through Zone 1${z1str} and it's ok if you sneak into Zone 2${z2str} toward the end. Concentrate on negative splits — each mile should feel a little stronger than the last. Target your HR average at the middle to 80% of Zone 1. Why: the long run builds your aerobic engine. Slow IS the workout.`;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -569,20 +765,27 @@ function buildLongRunNotes(phaseName, longMi, isCutback, z1, z2) {
 //   4 days → "tempo"    (Tempo / Race Pace OK, Yasso 800s held back)
 //   5 days → "full"     (complete progression, Yasso unlocked)
 // ─────────────────────────────────────────────────────────────
-function getQualityWorkout(phaseName, levelKey, weekData, zones, goal, weeksToRace, trainingDays) {
+function getQualityWorkout(phaseName, levelKey, weekData, zones, goal, weeksToRace, trainingDays, goalBracket) {
   const { easyMi, midMi, isCutback } = weekData;
+  const zr = zones?.zr ? zoneTargetBpm(zones.zr) : null;
   const z1 = zones?.z1 ? zoneTargetBpm(zones.z1) : null;
   const z2 = zones?.z2 ? zoneTargetBpm(zones.z2) : null;
   const z3 = zones?.z3 ? zoneTargetBpm(zones.z3) : null;
+  const zrstr = zr ? ` (target ${zr.label})` : " (Recovery)";
   const z1str = z1 ? ` (target ${z1.label})` : " (Zone 1)";
   const z2str = z2 ? ` (target ${z2.label})` : " (Zone 2)";
   const z3str = z3 ? ` (target ${z3.label})` : " (Zone 3)";
   const qMi = Math.max(easyMi, midMi || easyMi);
   const days = trainingDays || 4;
-  // capFartlek = 3-day runners: only easy/fartlek-level work (long run is the hard effort)
-  // capTempo   = 4-day runners: tempo and race pace OK, Yasso 800s held back
-  const capFartlek = days <= 3;
-  const capTempo   = days === 4;
+
+  // Effective quality cap — strictest of goalBracket and training days
+  // finish / sub-5 → fartlek only (easy, no real speed work)
+  // sub-4:30       → tempo ok, Yasso 800s held back
+  // sub-4 and faster + 4 days → tempo cap; 5 days → full
+  const goalForceFartlek = goalBracket === "finish" || goalBracket === "sub-5";
+  const goalForceTempo   = goalBracket === "sub-4:30";
+  const capFartlek = days <= 3 || goalForceFartlek;
+  const capTempo   = !capFartlek && (days === 4 || goalForceTempo);
 
   // Race Week — easy shakeout only
   if (phaseName === "Race Week") {
@@ -762,13 +965,15 @@ function getQualityWorkout(phaseName, levelKey, weekData, zones, goal, weeksToRa
 //   +5  Base Run      (if trainingDays >= 5) else Rest
 //   +6  Rest          (protect the long run — sleep, prep, hydrate)
 // ─────────────────────────────────────────────────────────────
-function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) {
+function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal, weekSundayStr) {
   const { longMi, easyMi, isCutback, phase, levelKey, weeksToRace } = weekData;
   const days      = trainingDays || 4;
   const phaseName = phase?.name || "Foundation";
 
+  const zr = zones?.zr ? zoneTargetBpm(zones.zr) : null;
   const z1 = zones?.z1 ? zoneTargetBpm(zones.z1) : null;
   const z2 = zones?.z2 ? zoneTargetBpm(zones.z2) : null;
+  const zrstr = zr ? ` (target ${zr.label})` : " (Recovery)";
   const z1str = z1 ? ` (target ${z1.label})` : " (Zone 1)";
   const z2str = z2 ? ` (target ${z2.label})` : " (Zone 2)";
 
@@ -778,7 +983,9 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) 
   const plan = DAYS.map((d, i) => ({
     idx: i, day: d, type: "Rest", zone: null,
     notes: "Full rest or a gentle 20-min walk. Recovery is where adaptation happens — this day is as important as any run.",
-    duration: "", miles: 0
+    duration: "", miles: 0,
+    targetZoneLow: null, targetZoneHigh: null,
+    plannedDate: weekSundayStr ? isoFromWeekStart(weekSundayStr, i) : null
   }));
 
   // +0 Long Run
@@ -788,10 +995,16 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) 
     duration: `${longMi} mi`, miles: longMi
   };
 
-  // +1 Cross-Train
-  plan[slot(1)] = {
-    idx: slot(1), day: DAYS[slot(1)], type: "Cross-Train", zone: "Z1",
-    notes: `Easy bike, swim, yoga, or walk${z1str}. Move without pounding — your legs are still recovering from yesterday's long run. 30–45 min is plenty. Why: active recovery flushes soreness and drives blood to repair muscle without adding impact stress.`,
+  // +1 Cross-Train or Strength (depending on goal bracket)
+  // Sub-4 and faster: scheduled strength training reduces injury 33% and improves economy 2-8%
+  const useStrength = weekData.goalBracket === "sub-4" || weekData.goalBracket === "sub-3:30" || weekData.goalBracket === "sub-3";
+  plan[slot(1)] = useStrength ? {
+    idx: slot(1), day: DAYS[slot(1)], type: "Strength", zone: null,
+    notes: "Strength session — 30–45 min. Focus on single-leg stability and hip strength: single-leg deadlifts, step-ups, clamshells, hip bridges, planks, and rows. Your legs are tired from yesterday so keep loads moderate. Why: strength training reduces running injuries by 33% and improves running economy 2–8% — it belongs in every serious training plan.",
+    duration: "30–45 min", miles: 0
+  } : {
+    idx: slot(1), day: DAYS[slot(1)], type: "Cross-Train", zone: "Recovery",
+    notes: `Easy bike, swim, yoga, or walk${zrstr}. Move without pounding — your legs are still recovering from yesterday's long run. 30–45 min is plenty. Why: active recovery flushes soreness and drives blood to repair muscle without adding impact stress.`,
     duration: "30–45 min", miles: 0
   };
 
@@ -802,9 +1015,12 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) 
     duration: "", miles: 0
   };
 
-  // +3 Quality Run (intensity scales with training days)
-  const quality = getQualityWorkout(phaseName, levelKey || "firstTimer", weekData, zones, goal, weeksToRace ?? 99, days);
-  plan[slot(3)] = { idx: slot(3), day: DAYS[slot(3)], ...quality };
+  // +3 Quality Run (intensity scales with training days and goal bracket)
+  const quality = getQualityWorkout(phaseName, levelKey || "firstTimer", weekData, zones, goal, weeksToRace ?? 99, days, weekData.goalBracket);
+  plan[slot(3)] = { idx: slot(3), day: DAYS[slot(3)], ...quality,
+    targetZoneLow: null, targetZoneHigh: null,
+    plannedDate: weekSundayStr ? isoFromWeekStart(weekSundayStr, slot(3)) : null
+  };
 
   // +4 and +5 slots — placement depends on training days to avoid consecutive rest days:
   //   5-day: +4=Base, +5=Base  → rests only at +2 and +6 (no consecutive)
@@ -835,8 +1051,17 @@ function buildFlexibleWeekPlan(longRunDay, trainingDays, weekData, zones, goal) 
   plan[slot(6)] = {
     idx: slot(6), day: DAYS[slot(6)], type: "Rest", zone: null,
     notes: "Rest day before your long run. Stay off your feet as much as you can. Lay out your gear, plan your route, hydrate throughout the day, and get to bed early.",
-    duration: "", miles: 0
+    duration: "", miles: 0,
+    targetZoneLow: null, targetZoneHigh: null,
+    plannedDate: weekSundayStr ? isoFromWeekStart(weekSundayStr, slot(6)) : null
   };
+
+  // Resolve bpm bounds for every day that has a zone target
+  for (const day of plan) {
+    const { low, high } = resolveZoneBounds(day.zone, zones);
+    day.targetZoneLow  = low  ?? null;
+    day.targetZoneHigh = high ?? null;
+  }
 
   return plan;
 }
@@ -984,13 +1209,14 @@ function getView() {
   if (state.view === "forgot-password" || state.view === "reset-sent") return ForgotPasswordPage();
   if (!state.user)   return LoginPage();
   switch (state.view) {
-    case "request-access": return RequestAccessPage();
     case "setup-profile":  return SetupProfile();
     case "setup-zones":    return SetupZones();
     case "setup-test":     return SetupTest();
+    case "setup-running":  return SetupRunning();
     case "setup-prefs":    return SetupPrefs();
     case "setup-goal":     return SetupGoal();
     case "update-plan":    return UpdatePlanPage();
+    case "goal-update":    return GoalUpdate();
     case "edit-profile":   return EditProfile();
     case "log-workout":    return LogWorkout();
     case "history":        return WorkoutHistory();
@@ -1016,14 +1242,13 @@ function LoginPage() {
     if (pw === ADMIN.password) {
       setState({ loading: true, error: null });
       try {
-        const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("Connection timed out.")), 8000));
-        const [data, pendingSnap] = await Promise.race([
+        const [data, pendingSnap] = await withTimeout(
           Promise.all([
             loadUserData(ADMIN.id),
             db.collection("signupRequests").where("status", "==", "pending").get()
           ]),
-          timeout
-        ]);
+          8000
+        );
         const pendingCount = pendingSnap.size || 0;
         setState({ user: ADMIN, ...data, pendingCount, loading: false, error: null, view: data.profile ? "dashboard" : "setup-profile" });
         checkStravaCallback();
@@ -1037,11 +1262,10 @@ function LoginPage() {
     setState({ loading: true, error: null });
     try {
       const hash = await hashPassword(pw);
-      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("Connection timed out.")), 8000));
-      const snap = await Promise.race([
+      const snap = await withTimeout(
         db.collection("approvedUsers").where("passwordHash", "==", hash).get(),
-        timeout
-      ]);
+        8000
+      );
 
       if (snap.empty) {
         // Check if this password belongs to a pending request
@@ -1061,6 +1285,13 @@ function LoginPage() {
       const info = doc.data();
       const user = { id: doc.id, name: info.name, admin: false };
       const data = await loadUserData(doc.id);
+      // Migrate old zone schema (z1/z2/z3 only) to new schema (zr/z1/z2/z3)
+      if (data.zones && !data.zones.zr && data.profile) {
+        const maxHR = data.zones.maxHR || data.profile.knownMaxHR || estimateMaxHR(data.profile.age);
+        const newZones = { ...calcZones(maxHR, data.profile.restingHR), method: data.zones.method || "estimated", lastTested: data.zones.lastTested || null };
+        await db.collection("users").doc(doc.id).collection("data").doc("zones").set(newZones, { merge: true });
+        data.zones = newZones;
+      }
       const groupData = data.profile?.groupId ? await loadGroupData(data.profile.groupId, doc.id) : null;
       setState({ user, ...data, groupData, loading: false, error: null, view: data.profile ? "dashboard" : "setup-profile" });
       // Check for Strava OAuth callback (user may have been redirected here after connecting)
@@ -1070,7 +1301,10 @@ function LoginPage() {
     }
   };
 
-  const pwInput = input({ id: "pw", type: "password", placeholder: "Enter your password" });
+  const emailInput = input({ id: "login-email", type: "email", placeholder: "Enter your email", autocomplete: "username email" });
+  emailInput.addEventListener("keydown", e => { if (e.key === "Enter") document.getElementById("pw")?.focus(); });
+
+  const pwInput = input({ id: "pw", type: "password", placeholder: "Enter your password", autocomplete: "current-password" });
   pwInput.addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 
   const logoBadge = div("login-logo");
@@ -1095,12 +1329,14 @@ function LoginPage() {
     ),
     div("login-card",
       errorBanner(),
+      div("field", emailInput),
       div("field", pwInput),
       signInBtn,
       div("link-row",
         btn("Request Access",  () => setState({ view: "request-access",  error: null }), "btn-link"),
         btn("Forgot password", () => setState({ view: "forgot-password", error: null }), "btn-link")
-      )
+      ),
+      el("p", { className: "login-disclaimer" }, "MyPaceZone is a training tool, not medical advice. Consult your doctor before starting any training program.")
     )
   );
 }
@@ -1193,12 +1429,14 @@ function SetupProfile() {
     const heightIn  = parseInt(document.getElementById("s-ht-in")?.value) || 0;
     const weight    = parseFloat(document.getElementById("s-weight")?.value);
     const restingHR = parseInt(document.getElementById("s-rhr")?.value);
+    const knownMaxHR = parseInt(document.getElementById("s-maxhr")?.value) || null;
 
     if (!name || !age || !weight || !restingHR) { showError("Please fill in all required fields."); return; }
     if (age < 18 || age > 95)                   { showError("Please enter a valid age (18–95)."); return; }
     if (restingHR < 35 || restingHR > 100)       { showError("Resting HR should be between 35–100 bpm."); return; }
+    if (knownMaxHR && (knownMaxHR < 130 || knownMaxHR > 220)) { showError("Max HR looks off — should be between 130–220 bpm."); return; }
 
-    const profile = { name, age, heightFt, heightIn, weight, restingHR, createdAt: new Date().toISOString() };
+    const profile = { name, age, heightFt, heightIn, weight, restingHR, knownMaxHR, createdAt: new Date().toISOString() };
     setState({ loading: true });
     await saveData("profile", profile);
     setState({ profile, loading: false, view: "setup-zones", error: null });
@@ -1206,7 +1444,7 @@ function SetupProfile() {
 
   return div("page",
     div("setup-page",
-      div("step-indicator", "Step 1 of 4 — Profile"),
+      div("step-indicator", "Step 1 of 5 — Profile"),
       h2("Tell us about yourself"),
       p("This helps us calculate your heart rate zones and flag fueling issues."),
       errorBanner(),
@@ -1218,6 +1456,9 @@ function SetupProfile() {
       ),
       field("Weight (lbs) *", input({ id: "s-weight", type: "number", placeholder: "e.g. 165", step: "0.1" })),
       field("Resting Heart Rate (bpm) *", input({ id: "s-rhr", type: "number", placeholder: "e.g. 58 — check first thing in the morning", min: "35", max: "100" })),
+      field("Highest heart rate you've seen on your watch (bpm)",
+        input({ id: "s-maxhr", type: "number", placeholder: "e.g. 174 — leave blank if unsure, we'll test you later", min: "130", max: "220" })
+      ),
       btn("Next →", save)
     )
   );
@@ -1227,23 +1468,31 @@ function SetupProfile() {
 // SETUP — Zone method
 // ═══════════════════════════════════════════════════════════════
 function SetupZones() {
-  const { age, restingHR } = state.profile;
-  const maxHR = estimateMaxHR(age);
+  const { age, restingHR, knownMaxHR } = state.profile;
+  const maxHR = knownMaxHR || estimateMaxHR(age);
   const est   = calcZones(maxHR, restingHR);
+  const usingKnown = !!knownMaxHR;
 
   const useEstimate = async () => {
     const zoneData = { ...est, method: "estimated", lastTested: null };
     setState({ loading: true });
     await saveData("zones", zoneData);
-    setState({ zones: zoneData, loading: false, view: "setup-prefs" });
+    setState({ zones: zoneData, loading: false, view: "setup-running" });
   };
 
   return div("page",
     div("setup-page",
-      div("step-indicator", "Step 2 of 4 — Heart Rate Zones"),
+      div("step-indicator", "Step 2 of 5 — Heart Rate Zones"),
       h2("Set up your training zones"),
-      p(`Based on your age (${age}) and resting HR (${restingHR} bpm), here are your estimated zones:`),
-      div("zone-preview", zoneBar(est.z1, "z1"), zoneBar(est.z2, "z2"), zoneBar(est.z3, "z3")),
+      p(usingKnown
+        ? `Based on your max HR (${maxHR} bpm) and resting HR (${restingHR} bpm), here are your zones:`
+        : `Based on your age (${age}) and resting HR (${restingHR} bpm), here are your estimated zones. Run the field test anytime to get exact numbers.`),
+      div("zone-preview",
+        est.zr ? zoneBar(est.zr, "zr") : null,
+        est.z1 ? zoneBar(est.z1, "z1") : null,
+        est.z2 ? zoneBar(est.z2, "z2") : null,
+        est.z3 ? zoneBar(est.z3, "z3") : null
+      ),
       p("Estimates are a solid starting point. You can run a field test at any time to get exact numbers."),
       btn("Use These Zones — Continue", useEstimate),
       div("link-row", btn("I want to do the field test now →", () => setState({ view: "setup-test" }), "btn-link"))
@@ -1264,7 +1513,7 @@ function SetupTest() {
     const zoneData = { ...calcZones(peakHR, state.profile.restingHR), method: "tested", lastTested: new Date().toISOString() };
     setState({ loading: true });
     await saveData("zones", zoneData);
-    setState({ zones: zoneData, loading: false, view: "setup-prefs", error: null });
+    setState({ zones: zoneData, loading: false, view: "setup-running", error: null });
   };
 
   return div("page",
@@ -1287,6 +1536,108 @@ function SetupTest() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// SETUP — Your Running (Step 3)
+// ═══════════════════════════════════════════════════════════════
+function SetupRunning() {
+  const save = async () => {
+    const marathonHistory  = document.getElementById("r-history")?.value;
+    const prevFinish       = document.getElementById("r-prev-finish")?.value.trim() || null;
+    const daysPerWeek      = parseInt(document.getElementById("r-days")?.value);
+    const weeklyMileage    = parseFloat(document.getElementById("r-weekly-mi")?.value) || null;
+    const comfortableLongRun = parseFloat(document.getElementById("r-clr")?.value) || null;
+    const easyRunFeel      = document.getElementById("r-feel")?.value;
+    const best5k10k        = document.getElementById("r-race-time")?.value.trim() || null;
+    const raceType         = document.getElementById("r-race-type")?.value || null;
+
+    if (!marathonHistory)  { showError("Please tell us your marathon experience."); return; }
+    if (!daysPerWeek)      { showError("Please select how many days a week you run."); return; }
+    if (!easyRunFeel)      { showError("Please tell us how your easy runs feel."); return; }
+
+    // Floor comfortable long run at 3 miles
+    const clrSafe = comfortableLongRun ? Math.max(3, comfortableLongRun) : null;
+
+    const runningProfile = { marathonHistory, prevFinish, daysPerWeek, weeklyMileage, comfortableLongRun: clrSafe, easyRunFeel, best5k10k, raceType };
+    setState({ loading: true });
+    await saveData("profile", { ...state.profile, ...runningProfile });
+    setState({ profile: { ...state.profile, ...runningProfile }, loading: false, view: "setup-prefs", error: null });
+  };
+
+  return div("page",
+    div("setup-page",
+      div("step-indicator", "Step 3 of 5 — Your Running"),
+      h2("Tell us about your running"),
+      p("This shapes your entire training plan — be honest, not optimistic."),
+      errorBanner(),
+
+      field("Marathon experience *", select("r-history", [
+        ["Select…", ""],
+        ["First marathon — never done one before", "first"],
+        ["Done one before — ready to go again", "repeat"],
+        ["Multiple marathons — chasing a time goal", "competitive"]
+      ], "")),
+
+      el("div", { id: "r-prev-finish-row", style: "display:none" },
+        field("Your best marathon finish time", input({ id: "r-prev-finish", type: "text", placeholder: "e.g. 4:32:00" }))
+      ),
+
+      field("How many days a week are you currently running? *", select("r-days", [
+        ["Select…", ""],
+        ["1–2 days", 2],
+        ["3 days", 3],
+        ["4 days", 4],
+        ["5 days", 5],
+        ["6+ days", 6]
+      ], "")),
+
+      field("Current average weekly mileage (miles)",
+        input({ id: "r-weekly-mi", type: "number", placeholder: "e.g. 22 — your typical week lately", min: "0", max: "150", step: "1" })
+      ),
+
+      field("Longest comfortable run in the last 30 days (miles)",
+        input({ id: "r-clr", type: "number", placeholder: "e.g. 6 — felt good, could have kept going", min: "1", max: "26", step: "0.5" })
+      ),
+
+      field("How do your easy runs feel? *", select("r-feel", [
+        ["Select…", ""],
+        ["Truly easy — I could hold a full conversation", "easy"],
+        ["Usually pushing a bit — comfortable but working", "moderate"],
+        ["Hard most days — easy never feels easy", "hard"]
+      ], "")),
+
+      field("Best 5K or 10K in the last 6 months (optional)", select("r-race-type", [
+        ["Select distance…", ""],
+        ["5K", "5k"],
+        ["10K", "10k"]
+      ], "")),
+      input({ id: "r-race-time", type: "text", placeholder: "e.g. 28:45 — leave blank if unsure", style: "margin-top:6px" }),
+
+      btn("Next →", save)
+    )
+  );
+}
+
+// Wire up form dynamic behaviours
+document.addEventListener("change", e => {
+  // Show/hide prev finish time
+  if (e.target.id === "r-history") {
+    const row = document.getElementById("r-prev-finish-row");
+    if (row) row.style.display = e.target.value !== "first" ? "" : "none";
+  }
+  // Live plan-length warning in SetupPrefs
+  if (e.target.id === "p-race" || e.target.id === "p-level") {
+    const raceDate    = document.getElementById("p-race")?.value;
+    const fitnessLevel = document.getElementById("p-level")?.value;
+    const warnEl      = document.getElementById("p-plan-warning");
+    if (!warnEl || !raceDate || !fitnessLevel) { if (warnEl) warnEl.textContent = ""; return; }
+    const rec    = recommendedPlanWeeks(state.profile?.weeklyMileage, fitnessLevel, state.profile?.marathonHistory);
+    const actual = Math.round((new Date(raceDate + "T12:00:00") - new Date()) / (1000 * 60 * 60 * 24 * 7));
+    warnEl.textContent = actual < rec.min
+      ? `⚠️ Race is ${actual} weeks away — your profile suggests ${rec.min}–${rec.max} weeks. Consider a shorter goal or adjusting your race date.`
+      : "";
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
 // SETUP — Preferences
 // ═══════════════════════════════════════════════════════════════
 function SetupPrefs() {
@@ -1297,11 +1648,13 @@ function SetupPrefs() {
     const fitnessLevel  = document.getElementById("p-level")?.value;
     const longRunDay    = parseInt(document.getElementById("p-lrd")?.value);
     const trainingDays  = parseInt(document.getElementById("p-days")?.value);
-    if (!raceDate)                        { showError("Please enter your race date."); return; }
-    if (new Date(raceDate) <= new Date()) { showError("Race date must be in the future."); return; }
+    const crossTrain    = document.getElementById("p-crosstrain")?.value || null;
+    const goalBracket   = document.getElementById("p-goal-bracket")?.value || null;
+    if (!raceDate)                                          { showError("Please enter your race date."); return; }
+    if (new Date(raceDate + "T12:00:00") <= new Date())    { showError("Race date must be in the future."); return; }
     if (!trainingStart)                   { showError("Please enter your training start date."); return; }
     if (!fitnessLevel)                    { showError("Please select your current fitness level."); return; }
-    const prefs = { raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays };
+    const prefs = { raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays, crossTrain, goalBracket };
     setState({ loading: true });
     await saveData("profile", { ...state.profile, ...prefs });
     setState({ profile: { ...state.profile, ...prefs }, loading: false, view: "setup-goal", error: null });
@@ -1309,17 +1662,35 @@ function SetupPrefs() {
 
   return div("page",
     div("setup-page",
-      div("step-indicator", "Step 3 of 4 — Training Plan"),
+      div("step-indicator", "Step 4 of 5 — Your Plan"),
       h2("Build your training plan"),
       errorBanner(),
       field("Race Date *", input({ id: "p-race", type: "date", min: today })),
+      el("div", { id: "p-plan-warning", className: "plan-length-warning" }),
       field("Training Start Date *", input({ id: "p-start", type: "date", value: today })),
       field("Current Fitness Level *", select("p-level", [
         ["Select your level…", ""],
-        ...Object.entries(PLAN_LEVELS).map(([k, v]) => [v.label, k])
+        ...PLAN_LEVEL_OPTIONS
+      ], "")),
+      field("Race goal *", select("p-goal-bracket", [
+        ["Select…", ""],
+        ["Finish — I just want to cross the line", "finish"],
+        ["Sub-5:00 (11:27/mi)", "sub-5"],
+        ["Sub-4:30 (10:18/mi)", "sub-4:30"],
+        ["Sub-4:00 (9:09/mi)",  "sub-4"],
+        ["Sub-3:30 (8:00/mi)",  "sub-3:30"],
+        ["Sub-3:00 (6:52/mi)",  "sub-3"]
       ], "")),
       field("Long Run Day", select("p-lrd", DNAMES.map((d, i) => [d, i]), 6)),
       field("Training Days Per Week", select("p-days", [[3,3],[4,4],[5,5],[6,6]].map(([l,v]) => [`${l} days`, v]), 4)),
+      field("Do you cross train?", select("p-crosstrain", [
+        ["Select…", ""],
+        ["None", "none"],
+        ["Bike", "bike"],
+        ["Swim", "swim"],
+        ["Strength training", "strength"],
+        ["Mixed", "mixed"]
+      ], "")),
       btn("Next →", save)
     )
   );
@@ -1344,23 +1715,55 @@ function EditProfile() {
     const fitnessLevel  = document.getElementById("ep-level")?.value;
     const longRunDay    = parseInt(document.getElementById("ep-lrd")?.value);
     const trainingDays  = parseInt(document.getElementById("ep-days")?.value);
-
+    const comfortableLongRun = parseFloat(document.getElementById("ep-clr")?.value) || null;
     if (!name || !age || !weight || !restingHR) { showError("Please fill in all required fields."); return; }
     if (age < 18 || age > 95)                   { showError("Please enter a valid age (18–95)."); return; }
     if (restingHR < 35 || restingHR > 100)       { showError("Resting HR should be between 35–100 bpm."); return; }
     if (!raceDate)                               { showError("Please enter your race date."); return; }
-    if (new Date(raceDate) <= new Date())        { showError("Race date must be in the future."); return; }
+    if (new Date(raceDate + "T12:00:00") <= new Date()) { showError("Race date must be in the future."); return; }
     if (!fitnessLevel)                           { showError("Please select your fitness level."); return; }
 
+    // Read manual zone overrides
+    const zrLo = parseInt(document.getElementById("ep-zr-lo")?.value);
+    const zrHi = parseInt(document.getElementById("ep-zr-hi")?.value);
+    const z1Lo = parseInt(document.getElementById("ep-z1-lo")?.value);
+    const z1Hi = parseInt(document.getElementById("ep-z1-hi")?.value);
+    const z2Lo = parseInt(document.getElementById("ep-z2-lo")?.value);
+    const z2Hi = parseInt(document.getElementById("ep-z2-hi")?.value);
+    const z3Lo = parseInt(document.getElementById("ep-z3-lo")?.value);
+    const z3Hi = parseInt(document.getElementById("ep-z3-hi")?.value);
+
     setState({ loading: true });
-    const updated = { ...profile, name, age, heightFt, heightIn, weight, restingHR, raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays };
+    const updated = { ...profile, name, age, heightFt, heightIn, weight, restingHR, raceDate, trainingStart, fitnessLevel, longRunDay, trainingDays, comfortableLongRun };
     await saveData("profile", updated);
 
-    // Recalculate zones if age or resting HR changed
+    const oldZones = state.zones;
+    const zonesManuallyEdited = oldZones && [zrLo, zrHi, z1Lo, z1Hi, z2Lo, z2Hi, z3Lo, z3Hi].every(v => !isNaN(v)) && (
+      zrLo !== oldZones.zr.low || zrHi !== oldZones.zr.high ||
+      z1Lo !== oldZones.z1.low || z1Hi !== oldZones.z1.high ||
+      z2Lo !== oldZones.z2.low || z2Hi !== oldZones.z2.high ||
+      z3Lo !== oldZones.z3.low || z3Hi !== oldZones.z3.high
+    );
+
     let updatedZones = state.zones;
-    if (state.zones && (age !== profile.age || restingHR !== profile.restingHR)) {
-      const maxHR = state.zones.method === "tested" ? state.zones.maxHR : estimateMaxHR(age);
-      updatedZones = { ...calcZones(maxHR, restingHR), method: state.zones.method, lastTested: state.zones.lastTested || null };
+    if (zonesManuallyEdited) {
+      updatedZones = {
+        ...oldZones,
+        zr: { ...oldZones.zr, low: zrLo, high: zrHi },
+        z1: { ...oldZones.z1, low: z1Lo, high: z1Hi },
+        z2: { ...oldZones.z2, low: z2Lo, high: z2Hi },
+        z3: { ...oldZones.z3, low: z3Lo, high: z3Hi },
+        bikeZr: { ...oldZones.bikeZr, low: zrLo - 11, high: zrHi - 11 },
+        bikeZ1: { ...oldZones.bikeZ1, low: z1Lo - 11, high: z1Hi - 11 },
+        bikeZ2: { ...oldZones.bikeZ2, low: z2Lo - 11, high: z2Hi - 11 },
+        bikeZ3: { ...oldZones.bikeZ3, low: z3Lo - 11, high: z3Hi - 11 },
+        method: "manual", lastTested: oldZones.lastTested || null
+      };
+      await saveData("zones", updatedZones);
+    } else if (oldZones && (age !== profile.age || restingHR !== profile.restingHR)) {
+      // Auto-recalculate zones when HR inputs change (and runner hasn't overridden them)
+      const maxHR = oldZones.method === "tested" ? oldZones.maxHR : (updated.knownMaxHR || estimateMaxHR(age));
+      updatedZones = { ...calcZones(maxHR, restingHR), method: oldZones.method, lastTested: oldZones.lastTested || null };
       await saveData("zones", updatedZones);
     }
 
@@ -1396,10 +1799,29 @@ function EditProfile() {
       field("Training Start Date *", input({ id: "ep-start", type: "date", value: profile?.trainingStart || "" })),
       field("Current Fitness Level *", select("ep-level", [
         ["Select your level…", ""],
-        ...Object.entries(PLAN_LEVELS).map(([k, v]) => [v.label, k])
+        ...PLAN_LEVEL_OPTIONS
       ], normalizeFitnessLevel(profile?.fitnessLevel) || "")),
       field("Long Run Day", select("ep-lrd", DNAMES.map((d, i) => [d, i]), profile?.longRunDay ?? 6)),
       field("Training Days Per Week", select("ep-days", [[3,3],[4,4],[5,5],[6,6]].map(([l,v]) => [`${l} days`, v]), profile?.trainingDays || 4)),
+      field("Current comfortable long run (miles)", input({ id: "ep-clr", type: "number", placeholder: "e.g. 5 — the longest run you could do comfortably today", min: "1", max: "26", step: "0.5", value: String(profile?.comfortableLongRun || "") })),
+      el("p", { className: "field-hint" }, "This sets where your plan actually starts — not where the fitness level assumes. Be honest: the plan builds from here."),
+      h3("Heart Rate Zones"),
+      el("p", { className: "field-hint" }, "Zones are calculated from your resting HR and max HR. You can override them here — just enter the BPM range for each zone and save."),
+      ...[
+        { id: "zr", label: "Recovery", cls: "zr" },
+        { id: "z1", label: "Zone 1 – Easy",    cls: "z1" },
+        { id: "z2", label: "Zone 2 – Aerobic", cls: "z2" },
+        { id: "z3", label: "Zone 3 – Tempo",   cls: "z3" },
+      ].map(({ id, label, cls }) => {
+        const z = state.zones?.[id];
+        return div("zone-editor-row " + cls,
+          el("span", { className: "zone-editor-label" }, label),
+          input({ id: `ep-${id}-lo`, type: "number", className: "zone-editor-input", min: "40", max: "220", value: String(z?.low ?? "") }),
+          el("span", { className: "zone-editor-sep" }, "–"),
+          input({ id: `ep-${id}-hi`, type: "number", className: "zone-editor-input", min: "40", max: "220", value: String(z?.high ?? "") }),
+          el("span", { className: "zone-editor-unit" }, "bpm")
+        );
+      }),
       btn("Save Changes", save)
     )
   );
@@ -1425,10 +1847,184 @@ function UpdatePlanPage() {
       errorBanner(),
       field("Current Fitness Level *", select("up-level", [
         ["Select your level…", ""],
-        ...Object.entries(PLAN_LEVELS).map(([k, v]) => [v.label, k])
+        ...PLAN_LEVEL_OPTIONS
       ], normalizeFitnessLevel(state.profile?.fitnessLevel) || "")),
       field("Training Start Date *", input({ id: "up-start", type: "date", value: state.profile?.trainingStart || today })),
       btn("Save & Rebuild Plan", save)
+    )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GOAL UPDATE — coaching conversation
+// ═══════════════════════════════════════════════════════════════
+function GoalUpdate() {
+  const { profile } = state;
+  const currentBracket = profile?.goalBracket || "";
+
+  const BRACKET_LABELS = {
+    "finish":    "Finish — I just want to cross the line",
+    "sub-5":     "Sub-5:00 (11:27/mi)",
+    "sub-4:30":  "Sub-4:30 (10:18/mi)",
+    "sub-4":     "Sub-4:00 (9:09/mi)",
+    "sub-3:30":  "Sub-3:30 (8:00/mi)",
+    "sub-3":     "Sub-3:00 (6:52/mi)"
+  };
+
+  const COACHING_INSIGHTS = {
+    // driving + training + physical → advice string
+    "stronger+on-track+fresh":    "You're firing on all cylinders — a stretch goal makes sense. Just make sure the plan adjusts quality work proportionally.",
+    "stronger+on-track+tired":    "Strong motivation + good mileage, but your body needs recovery. Hold the new goal but prioritize sleep and easy days this week.",
+    "stronger+more+fresh":        "Running more AND feeling fresh is rare — make sure the extra volume is easy miles, not junk miles. A bump up looks well-earned.",
+    "stronger+more+tired":        "More volume plus fatigue — be careful. A modest goal bump is fine, but a down week first will pay off.",
+    "stronger+less+fresh":        "Feeling strong despite lower mileage? Trust that instinct, but rebuild gradually before committing to a faster goal.",
+    "stronger+less+tired":        "Mixed signals — motivation is up but training and body aren't aligned. Consider holding your current goal for 2 more weeks, then reassess.",
+    "new-race+on-track+fresh":    "New race, solid training, fresh legs — great spot to lock in a goal. Your current fitness will carry you there.",
+    "new-race+on-track+tired":    "New race energy is real, but your body is talking. Rest now so you're sharp when it counts.",
+    "new-race+more+fresh":        "Building well for a new race — a goal in the middle of your bracket range is a smart anchor.",
+    "new-race+more+tired":        "Excitement for a new race is great, but back off the volume slightly. Consistency beats hero weeks.",
+    "new-race+less+fresh":        "Lower mileage but feeling good — a conservative goal protects the race experience. You can always negative split.",
+    "new-race+less+tired":        "New race + low mileage + fatigue — make sure the goal is realistic. An honest finish goal sets you up to love the sport.",
+    "setback+on-track+fresh":     "Back on track after a setback and feeling fresh — that's resilience. A modest goal reset keeps momentum without over-promising.",
+    "setback+on-track+tired":     "Coming back from a setback while tired — the plan is solid, but add one extra rest day this week.",
+    "setback+more+fresh":         "Running strong after a setback is encouraging. Make sure the extra mileage isn't compensating — easy pace first.",
+    "setback+more+tired":         "After a setback, more mileage + fatigue is a yellow flag. Drop back to your base target and rebuild.",
+    "setback+less+fresh":         "Feeling okay despite lower mileage — that's a body that's healed. A conservative goal keeps confidence high.",
+    "setback+less+tired":         "Setback + lower mileage + fatigue: your body is asking for more time. A finish goal this race protects your long-term running.",
+    "advisor+on-track+fresh":     "Coached change + solid training + fresh body — a well-supported goal shift. Trust the process.",
+    "advisor+on-track+tired":     "Your advisor sees something you might not. Combine their guidance with an honest check-in on fatigue this week.",
+    "advisor+more+fresh":         "More volume on your advisor's plan and feeling good — this is how breakthroughs happen.",
+    "advisor+more+tired":         "Advisor-driven and putting in the miles, but your body is tired. Communicate the fatigue — a great coach adjusts.",
+    "advisor+less+fresh":         "Advisor tweaked the goal on lower mileage, but you feel fresh — trust that recovery is working.",
+    "advisor+less+tired":         "Lower mileage, fatigue, and a new advisor goal — make sure the adjustment is intentional, not reactive. A down week may be prescribed.",
+
+    // beaten-up physical state — always a caution message
+    "stronger+on-track+beaten":   "Something hurts — even with strong motivation and solid training, racing through pain rarely ends well. See a physio before committing to a faster goal.",
+    "stronger+more+beaten":       "Beaten up while running more? This is overuse territory. Pull back the volume, address the pain, then revisit the goal.",
+    "stronger+less+beaten":       "Lower volume but still hurting — your body needs a rest block before a goal change makes sense.",
+    "new-race+on-track+beaten":   "New race excitement is real, but racing injured is a bigger gamble than a conservative goal. Get the pain assessed first.",
+    "new-race+more+beaten":       "New race + extra volume + pain = injury waiting to happen. Take a down week, see a physio, then lock in a goal.",
+    "new-race+less+beaten":       "New race on the calendar, but you're hurting — a finish goal protects your ability to toe the line at all.",
+    "setback+on-track+beaten":    "Coming back from a setback while still in pain suggests incomplete recovery. Prioritize healing over the goal bracket.",
+    "setback+more+beaten":        "More mileage than planned and beaten up after a setback — this is a red flag. Ease off and let your body catch up.",
+    "setback+less+beaten":        "Low mileage, a setback, and ongoing pain — a finish goal is the right call. Get to the start line healthy.",
+    "advisor+on-track+beaten":    "Your advisor should know you're in pain. Communicate it — no plan survives contact with injury.",
+    "advisor+more+beaten":        "Running your advisor's plan but hurting — flag this at your next check-in. Pain always overrides the program.",
+    "advisor+less+beaten":        "Below target mileage and beaten up — rest is the training right now. Your goal will wait."
+  };
+
+  const save = async () => {
+    const newBracket  = document.getElementById("gu-bracket")?.value;
+    const driving     = document.getElementById("gu-driving")?.value;
+    const training    = document.getElementById("gu-training")?.value;
+    const physical    = document.getElementById("gu-physical")?.value;
+
+    if (!newBracket)  { showError("Please select a goal bracket."); return; }
+    if (!driving)     { showError("Tell us what's driving this change."); return; }
+    if (!training)    { showError("Tell us how training has been going."); return; }
+    if (!physical)    { showError("Tell us how you feel physically."); return; }
+
+    setState({ loading: true });
+    const updated = {
+      ...profile,
+      goalBracket: newBracket,
+      goalChangeContext: { driving, training, physical, changedAt: new Date().toISOString() }
+    };
+    await saveData("profile", updated);
+    setState({ profile: updated, loading: false, view: "dashboard", error: null });
+  };
+
+  // Compute live coaching insight from current dropdown values
+  const getInsight = () => {
+    const d = document.getElementById("gu-driving")?.value;
+    const t = document.getElementById("gu-training")?.value;
+    const p = document.getElementById("gu-physical")?.value;
+    if (!d || !t || !p) return null;
+    return COACHING_INSIGHTS[`${d}+${t}+${p}`] || null;
+  };
+
+  const insightId = "gu-insight";
+  const updateInsight = () => {
+    const box = document.getElementById(insightId);
+    if (!box) return;
+    const msg = getInsight();
+    box.textContent = msg || "";
+    box.style.display = msg ? "block" : "none";
+  };
+
+  // Wire up live insight on change
+  setTimeout(() => {
+    ["gu-driving", "gu-training", "gu-physical"].forEach(id => {
+      const el2 = document.getElementById(id);
+      if (el2) el2.addEventListener("change", updateInsight);
+    });
+  }, 0);
+
+  const currentLabel = BRACKET_LABELS[currentBracket];
+
+  return div("page",
+    div("card goal-update-card",
+      pageHeader("Update Your Race Goal", () => setState({ view: "dashboard" })),
+      errorBanner(),
+
+      currentBracket
+        ? div("goal-update-current",
+            el("span", { className: "goal-update-current-label" }, "Current goal:"),
+            el("span", { className: "goal-update-current-value" }, currentLabel || currentBracket)
+          )
+        : p("You haven't set a goal bracket yet — let's do that now."),
+
+      div("goal-update-section",
+        h3("What's your new goal?"),
+        el("p", { className: "goal-update-hint" }, "Be honest with yourself — the right goal for where you are now beats an aspirational goal that breaks you."),
+        field("Race goal bracket", select("gu-bracket", [
+          ["Select a goal…", ""],
+          ["Finish — I just want to cross the line", "finish"],
+          ["Sub-5:00 (11:27/mi)", "sub-5"],
+          ["Sub-4:30 (10:18/mi)", "sub-4:30"],
+          ["Sub-4:00 (9:09/mi)",  "sub-4"],
+          ["Sub-3:30 (8:00/mi)",  "sub-3:30"],
+          ["Sub-3:00 (6:52/mi)",  "sub-3"]
+        ], currentBracket))
+      ),
+
+      div("goal-update-section",
+        h3("What's driving this change?"),
+        field("", select("gu-driving", [
+          ["Select one…", ""],
+          ["I've been feeling stronger lately", "stronger"],
+          ["New race on the calendar", "new-race"],
+          ["Injury, illness, or setback", "setback"],
+          ["My coach or advisor suggested it", "advisor"]
+        ], ""))
+      ),
+
+      div("goal-update-section",
+        h3("How has training been going?"),
+        field("", select("gu-training", [
+          ["Select one…", ""],
+          ["On track — hitting most sessions", "on-track"],
+          ["Running more than planned", "more"],
+          ["Running less than planned", "less"]
+        ], ""))
+      ),
+
+      div("goal-update-section",
+        h3("How do you feel physically right now?"),
+        field("", select("gu-physical", [
+          ["Select one…", ""],
+          ["Fresh and ready to push", "fresh"],
+          ["Tired but managing fine", "tired"],
+          ["Beaten up — something hurts", "beaten"]
+        ], ""))
+      ),
+
+      el("div", { id: insightId, className: "goal-update-insight", style: "display:none" }, ""),
+
+      div("goal-update-actions",
+        btn("Save Goal & Rebuild Plan", save),
+        btn("Cancel", () => setState({ view: "dashboard", error: null }), "btn-secondary")
+      )
     )
   );
 }
@@ -1453,7 +2049,7 @@ function SetupGoal() {
 
   return div("page",
     div("setup-page",
-      div("step-indicator", "Step 4 of 4 — Race Goal"),
+      div("step-indicator", "Step 5 of 5 — Race Goal"),
       h2("What's your goal pace?"),
       errorBanner(),
       !prediction && p("You haven't logged any workouts yet — we can't validate this against current fitness. You can update your goal any time."),
@@ -1509,7 +2105,10 @@ function Dashboard() {
   const zonesCard = zones ? div("card",
     h2("Your HR Zones"),
     el("div", { className: "zone-method" }, `Method: ${zones.method === "tested" ? "Field test ✓" : "Estimated"}`),
-    zoneBar(zones.z1, "z1"), zoneBar(zones.z2, "z2"), zoneBar(zones.z3, "z3"),
+    zones.zr ? zoneBar(zones.zr, "zr") : null,
+    zones.z1 ? zoneBar(zones.z1, "z1") : null,
+    zones.z2 ? zoneBar(zones.z2, "z2") : null,
+    zones.z3 ? zoneBar(zones.z3, "z3") : null,
     btn("Update Zones (Run Field Test)", () => setState({ view: "test" }), "btn-secondary")
   ) : null;
 
@@ -1588,6 +2187,7 @@ function Dashboard() {
       btn("Log a Workout",          () => setState({ view: "log-workout" })),
       btn("View Workout History",   () => setState({ view: "history" })),
       btn("View Full Training Plan",() => setState({ view: "plan" })),
+      btn("Update My Race Goal", () => setState({ view: "goal-update" }), "btn-secondary"),
       btn("Update Fitness Level / Rebuild Plan", () => setState({ view: "update-plan" }), "btn-secondary"),
       btn("Edit Profile & Plan Settings", () => setState({ view: "edit-profile" }), "btn-secondary")
     ),
@@ -1671,7 +2271,12 @@ function StravaImportPage() {
       const newWorkouts = [{ id: Date.now().toString(), ...workout }, ...state.workouts];
       // Remove from pending list
       const remaining = (state.stravaActivities || []).filter(a => a.id !== activity.id);
-      setState({ workouts: newWorkouts, stravaActivities: remaining, loading: false });
+      // If nothing left to import, go straight to history to show results
+      if (remaining.length === 0) {
+        setState({ workouts: newWorkouts, stravaActivities: remaining, loading: false, view: "history" });
+      } else {
+        setState({ workouts: newWorkouts, stravaActivities: remaining, loading: false });
+      }
     } catch (err) {
       setState({ loading: false, error: "Import failed: " + err.message });
     }
@@ -1686,35 +2291,35 @@ function StravaImportPage() {
       // Reload workouts fresh
       const snap = await userDoc().collection("workouts").orderBy("date", "desc").limit(100).get();
       const workouts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setState({ workouts, stravaActivities: [], loading: false });
+      // Navigate to history so the user can see their imported workouts
+      setState({ workouts, stravaActivities: [], loading: false, view: "history", error: null });
     } catch (err) {
       setState({ loading: false, error: "Import failed: " + err.message });
     }
   };
 
-  const newRuns = activities.filter(a => !existingStravaIds.has(String(a.id)));
-  const alreadyIn = activities.filter(a => existingStravaIds.has(String(a.id)));
+  const newActivities = activities.filter(a => !existingStravaIds.has(String(a.id)));
 
   return div("page",
     div("card",
       pageHeader("Import from Strava", () => setState({ view: "dashboard" })),
       state.stravaLoading
-        ? p("Fetching your Strava runs…")
+        ? p("Fetching your Strava activities…")
         : activities.length === 0
           ? div(null,
-              p("No runs found in your last 30 Strava activities."),
+              p("No activities found in your last 30 Strava activities."),
               btn("Back to Dashboard", () => setState({ view: "dashboard" }))
             )
           : div(null,
               errorBanner(),
-              newRuns.length > 0
+              newActivities.length > 0
                 ? div("strava-import-header",
                     el("p", { className: "strava-import-count" },
-                      `${newRuns.length} new run${newRuns.length !== 1 ? "s" : ""} ready to import`
+                      `${newActivities.length} new activit${newActivities.length !== 1 ? "ies" : "y"} ready to import`
                     ),
-                    btn(`Import All (${newRuns.length})`, importAll, "btn-strava-import-all")
+                    btn(`Import All (${newActivities.length})`, importAll, "btn-strava-import-all")
                   )
-                : p("All recent Strava runs are already in your log."),
+                : p("All recent Strava activities are already in your log."),
 
               div("strava-activity-list",
                 activities.map(activity => {
@@ -1729,7 +2334,7 @@ function StravaImportPage() {
 
                   return div(`strava-activity-row${alreadyImported ? " strava-already-imported" : ""}`,
                     div("strava-activity-info",
-                      el("span", { className: "strava-activity-name" }, activity.name || "Run"),
+                      el("span", { className: "strava-activity-name" }, activity.name || activity.sport_type || activity.type || "Activity"),
                       el("span", { className: "strava-activity-date" }, dateStr),
                       div("strava-activity-stats",
                         el("span", null, `📍 ${distMi} mi`),
@@ -1954,27 +2559,137 @@ function LogWorkout() {
 // ═══════════════════════════════════════════════════════════════
 // WORKOUT HISTORY
 // ═══════════════════════════════════════════════════════════════
-function workoutMoodTag(w, showFlag) {
+function workoutZoneResult(w) {
+  const zones = state.zones;
+  if (!w.avgHR || !zones || !zones.zr) return null;
+  const hr = w.avgHR;
+
+  let label, cls;
+  if      (hr < zones.zr.low)                              { label = "Below Recovery"; cls = "wz-below"; }
+  else if (hr <= zones.zr.high)                            { label = "Recovery";       cls = "wz-zr";    }
+  else if (hr < zones.z1.low)                              { label = "Gap Zone";       cls = "wz-gap";   }
+  else if (hr <= zones.z1.high)                            { label = "Zone 1";         cls = "wz-z1";    }
+  else if (zones.z2 && hr <= zones.z2.high)                { label = "Zone 2";         cls = "wz-z2";    }
+  else if (zones.z3 && hr <= zones.z3.high)                { label = "Zone 3";         cls = "wz-z3";    }
+  else                                                     { label = "Above Z3";       cls = "wz-above"; }
+
+  return el("span", { className: `workout-zone-result ${cls}` }, `● ${label}`);
+}
+
+function workoutMoodTag(w) {
   const cur  = MOODS.find(m => m.key === w.mood);
   const orig = MOODS.find(m => m.key === w.moodOriginal);
   if (!cur && !orig) return null;
-  const changed = showFlag && orig && cur && orig.key !== cur.key;
   return div("workout-mood",
     el("span", { className: `mood-tag mood-${cur?.key || orig?.key}` },
       `${cur?.emoji || orig?.emoji} ${cur?.label || orig?.label}`
-    ),
-    changed ? el("span", { className: "mood-changed-flag" }, `(logged: ${orig.emoji} ${orig.label})`) : null
+    )
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+// WORKOUT EVALUATION ENGINE
+// ═══════════════════════════════════════════════════════════════
+function buildPlanIndex(profile, zones, goal) {
+  if (!profile?.raceDate || !profile?.trainingStart) return {};
+  const startDate  = new Date(profile.trainingStart + "T12:00:00");
+  const raceDate   = new Date(profile.raceDate + "T12:00:00");
+  const totalWeeks = Math.max(1, Math.ceil((raceDate - startDate) / (7 * 24 * 60 * 60 * 1000)));
+
+  // Sunday of week 0
+  const week0Sunday = new Date(startDate);
+  week0Sunday.setDate(week0Sunday.getDate() - week0Sunday.getDay());
+
+  const longRunDay   = profile.longRunDay ?? 6;
+  const trainingDays = profile.trainingDays || 4;
+  const goalBracket  = profile.goalBracket || null;
+  const index        = {};
+
+  let prevLongIdx  = null;
+  let lastBuildIdx = null;
+  for (let w = 0; w < totalWeeks; w++) {
+    const weekSunday = new Date(week0Sunday);
+    weekSunday.setDate(week0Sunday.getDate() + w * 7);
+    const weekSundayStr = weekSunday.toISOString().split("T")[0];
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, trainingDays, goalBracket, prevLongIdx, lastBuildIdx);
+    prevLongIdx = wd.longMi;
+    if (!wd.isCutback && wd.weeksToRace > 4) lastBuildIdx = wd.longMi;
+    const plan = buildFlexibleWeekPlan(longRunDay, trainingDays, wd, zones, goal, weekSundayStr);
+    for (const day of plan) {
+      if (day.plannedDate) index[day.plannedDate] = day;
+    }
+  }
+  return index;
+}
+
+function evaluateWorkout(workout, planIndex) {
+  if (!workout?.date || !planIndex) return null;
+  const planned = planIndex[workout.date];
+  if (!planned) return null; // outside plan window — show nothing
+
+  if (planned.type === "Rest") {
+    return { grade: "bonus", label: "Bonus — rest day run" };
+  }
+  if (planned.type === "Strength" || planned.type === "Cross-Train") {
+    return { grade: "info", label: planned.type, plannedType: planned.type };
+  }
+  if (!workout.avgHR) {
+    return { grade: "no-hr", label: `Planned: ${planned.type}${planned.zone ? " (" + planned.zone + ")" : ""}`, plannedType: planned.type };
+  }
+
+  const lo = planned.targetZoneLow;
+  const hi = planned.targetZoneHigh;
+  if (!lo || !hi) {
+    return { grade: "no-hr", label: `Planned: ${planned.type}`, plannedType: planned.type };
+  }
+
+  const hr = workout.avgHR;
+  if (hr >= lo && hr <= hi)  return { grade: "green",  label: `✅ On target — ${planned.type}`,          plannedType: planned.type, plannedZone: planned.zone };
+  if (hr < lo)               return { grade: "yellow", label: `🟡 Below target zone — ${planned.type}`,  plannedType: planned.type, plannedZone: planned.zone };
+                             return { grade: "red",    label: `🔴 Above target zone — ${planned.type}`,  plannedType: planned.type, plannedZone: planned.zone };
+}
+
+function workoutEvalBadge(ev) {
+  if (!ev) return null;
+  const cls = ev.grade === "green"  ? "eval-green"  :
+              ev.grade === "yellow" ? "eval-yellow" :
+              ev.grade === "red"    ? "eval-red"    :
+              ev.grade === "bonus"  ? "eval-bonus"  :
+              ev.grade === "info"   ? "eval-info"   : "eval-nohr";
+  return el("span", { className: `workout-eval-badge ${cls}` }, ev.label);
+}
+
+function analyzeSplitHRDrift(splitHRs, zones) {
+  if (!splitHRs || splitHRs.length < 2 || !zones) return null;
+  const zoneFor = hr => {
+    if (!hr) return null;
+    if (hr <= (zones.zr?.high || 0)) return "Recovery";
+    if (hr < (zones.z1?.low  || 0)) return "Gap";
+    if (hr <= (zones.z1?.high || 0)) return "Z1";
+    if (hr <= (zones.z2?.high || 0)) return "Z2";
+    if (hr <= (zones.z3?.high || 0)) return "Z3";
+    return "Above Z3";
+  };
+  const first = zoneFor(splitHRs[0]);
+  const last  = zoneFor(splitHRs[splitHRs.length - 1]);
+  const driftedHigh = last === "Z3" || last === "Above Z3";
+  const startedHigh = first === "Z3" || first === "Above Z3";
+  if (startedHigh) return "Started too hard — began in Z3.";
+  if (driftedHigh) return "HR drifted into Z3 late — good effort, watch pacing next time.";
+  return null; // healthy drift — no warning needed
+}
+
 function WorkoutHistory() {
+  const planIndex = buildPlanIndex(state.profile, state.zones, state.goal);
   return div("page",
     el("header", null, h1("Workout History"), btn("← Back", () => setState({ view: "dashboard" }), "btn-back")),
     state.workouts.length === 0
       ? div("card", p("No workouts logged yet."))
       : div("workout-list",
-          state.workouts.map(w =>
-            div("workout-card",
+          state.workouts.map(w => {
+            const evaluation  = evaluateWorkout(w, planIndex);
+            const driftNote   = w.splitHRs ? analyzeSplitHRDrift(w.splitHRs, state.zones) : null;
+            return div("workout-card",
               div("workout-header",
                 el("span", { className: "workout-date" }, w.date),
                 el("span", { className: "workout-type-tag" }, w.type || "Run"),
@@ -1991,17 +2706,24 @@ function WorkoutHistory() {
                 w.avgHR     ? span("♥ avg ", w.avgHR, " bpm")                 : null,
                 w.maxHR     ? span("♥ max ", w.maxHR, " bpm")                 : null,
                 w.weightLbs ? span("⚖️ ", w.weightLbs, " lbs")                : null,
-                w.predictedFinishStr ? span("📈 ", w.predictedFinishStr)       : null
+                w.predictedFinishStr ? span("📈 ", w.predictedFinishStr)       : null,
+                workoutZoneResult(w)
               ),
+              workoutEvalBadge(evaluation),
               w.splits ? div("workout-splits",
                 el("span", { className: "splits-label" }, w.type === "Swim" ? "Splits /100 yds:" : "Splits /mi:"),
                 el("span", { className: "splits-values" }, w.splits)
               ) : null,
-              workoutMoodTag(w, false),
+              w.splitHRs && w.splitHRs.length > 0 ? div("workout-splits",
+                el("span", { className: "splits-label" }, "Mile HRs:"),
+                el("span", { className: "splits-values" }, w.splitHRs.join(", ") + " bpm")
+              ) : null,
+              driftNote ? el("p", { className: "drift-note" }, driftNote) : null,
+              workoutMoodTag(w),
               w.notes ? div("workout-notes", w.notes) : null,
               w.source === "strava" ? el("span", { className: "strava-source-tag" }, "via Strava") : null
-            )
-          )
+            );
+          })
         )
   );
 }
@@ -2064,8 +2786,12 @@ function renderPlanChart(profile, totalWeeks, currentWeekIdx) {
   const level = PLAN_LEVELS[key] || PLAN_LEVELS.firstTimer;
   const maxLong = level.longPeak;
 
+  let prevLong  = null;
+  let lastBuild = null;
   const weeks = Array.from({ length: totalWeeks }, (_, w) => {
-    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w);
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, profile.trainingDays || 4, profile.goalBracket || null, prevLong, lastBuild);
+    prevLong = wd.longMi;
+    if (!wd.isCutback && wd.weeksToRace > 4) lastBuild = wd.longMi;
     return { weekNum: w + 1, wd, isCurrent: w === currentWeekIdx };
   });
 
@@ -2091,13 +2817,25 @@ function renderPlanChart(profile, totalWeeks, currentWeekIdx) {
 function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
   const longRunDay   = profile.longRunDay ?? 6;
   const trainingDays = profile.trainingDays || 4;
-  const startDate    = new Date(profile.trainingStart || profile.createdAt);
+  const goalBracket  = profile.goalBracket || null;
+  const startDate    = new Date((profile.trainingStart || profile.createdAt) + "T12:00:00");
 
+  // Compute the Sunday of training week 0 (for plannedDate mapping)
+  const week0Sunday = new Date(startDate);
+  week0Sunday.setDate(week0Sunday.getDate() - week0Sunday.getDay());
+
+  let prevLong2  = null;
+  let lastBuild2 = null;
   const weeks = Array.from({ length: totalWeeks }, (_, w) => {
-    const wd      = calcWeekData(profile.fitnessLevel, w, totalWeeks - w);
-    const plan    = buildFlexibleWeekPlan(longRunDay, trainingDays, wd, state.zones, state.goal);
+    const wd = calcWeekData(profile.fitnessLevel, w, totalWeeks - w, profile.comfortableLongRun, trainingDays, goalBracket, prevLong2, lastBuild2);
+    prevLong2 = wd.longMi;
+    if (!wd.isCutback && wd.weeksToRace > 4) lastBuild2 = wd.longMi;
+    const weekSunday = new Date(week0Sunday);
+    weekSunday.setDate(week0Sunday.getDate() + w * 7);
+    const weekSundayStr = weekSunday.toISOString().split("T")[0];
+    const plan = buildFlexibleWeekPlan(longRunDay, trainingDays, wd, state.zones, state.goal, weekSundayStr);
     const weekStart = new Date(startDate);
-    weekStart.setDate(weekStart.getDate() + w * 7);
+    weekStart.setDate(startDate.getDate() + w * 7);
     return { weekNum: w + 1, plan, wd, isCurrent: w === currentWeekIdx, weekStart };
   });
 
@@ -2112,15 +2850,17 @@ function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
             el("span", { className: "plan-week-num" }, `Week ${w.weekNum}`),
             el("span", { className: "plan-week-date" }, dateStr),
             el("span", { className: "plan-phase-tag" }, phaseName),
+            w.wd.totalMi ? el("span", { className: "plan-week-miles" }, `~${w.wd.totalMi} mi`) : null,
             w.isCurrent    ? el("span", { className: "plan-tag current-tag" }, "← Now")      : null,
             w.wd.isCutback ? el("span", { className: "plan-tag cutback-tag" }, "↓ Recovery") : null
           ),
           div("plan-week-days",
             w.plan.map(day => {
               const typeCls =
-                day.type === "Long Run"           ? "long"    :
-                day.type === "Cross-Train"        ? "cross"   :
-                day.type === "Rest"               ? "rest"    :
+                day.type === "Long Run"           ? "long"     :
+                day.type === "Cross-Train"        ? "cross"    :
+                day.type === "Strength"           ? "strength" :
+                day.type === "Rest"               ? "rest"     :
                 ["Fartlek","Light Fartlek","Structured Fartlek","Strides"].includes(day.type) ? "fartlek" :
                 ["Tempo Run","Race Pace Run","Yasso 800s","Easy Shakeout"].includes(day.type)  ? "quality" :
                 "easy";
@@ -2128,6 +2868,7 @@ function renderPlanCalendar(profile, totalWeeks, currentWeekIdx) {
               const cellLabel =
                 day.type === "Long Run"        ? `Long\n${w.wd.longMi} mi` :
                 day.type === "Cross-Train"     ? "X-Train"                 :
+                day.type === "Strength"        ? "Strength"                :
                 day.type === "Rest"            ? "Rest"                    :
                 day.type === "Base Run"        ? `Base${shortMi}`          :
                 day.type === "Fartlek"         ? `Fartlek${shortMi}`       :
@@ -2190,28 +2931,28 @@ function FieldTest() {
 // ═══════════════════════════════════════════════════════════════
 async function loadCommandCenter() {
   setState({ loading: true, view: "command", error: null });
-  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("Connection timed out.")), 10000));
   try {
-    const [approvedSnap, pendingSnap, groupsSnap] = await Promise.race([
+    const [approvedSnap, pendingSnap, groupsSnap] = await withTimeout(
       Promise.all([
         db.collection("approvedUsers").get(),
         db.collection("signupRequests").where("status", "==", "pending").get(),
         db.collection("groups").get()
       ]),
-      timeout
-    ]);
+      10000
+    );
 
     const approved = approvedSnap.docs.map(d => ({ docId: d.id, ...d.data() }));
     const pending  = pendingSnap.docs.map(d => ({ docId: d.id, ...d.data() }));
     const groups   = groupsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-    const allUsers = await Promise.race([
+    const allUsers = await withTimeout(
       Promise.all([
         loadUserData(ADMIN.id).then(d => ({ ...d, name: ADMIN.name, userId: ADMIN.id, admin: true })),
         ...approved.map(u => loadUserData(u.docId).then(d => ({ ...d, name: u.name, userId: u.docId, admin: false })))
       ]),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("Timed out loading athlete data.")), 10000))
-    ]);
+      10000,
+      "Timed out loading athlete data."
+    );
 
     setState({ allUsers, pendingRequests: pending, pendingCount: pending.length, adminGroups: groups, loading: false });
   } catch (err) {
