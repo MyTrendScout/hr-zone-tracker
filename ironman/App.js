@@ -376,7 +376,7 @@ async function notifyAdmin(name, note) {
       method:  "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify({
-        subject:   `Jax 140.6 — access request from ${name}`,
+        subject:   `Ironman Training — access request from ${name}`,
         name,
         note:      note || "(no note left)",
         timestamp: new Date().toLocaleString()
@@ -1325,10 +1325,9 @@ function LoginPage() {
       div("login-brand",
         logoBadge,
         div("login-brand-name",
-          el("span", { className: "lbn-my" }, "Jax"),
           el("span", { className: "lbn-wordmark" },
-            el("span", { className: "lbn-pace" }, "140"),
-            el("span", { className: "lbn-zone" }, ".6")
+            el("span", { className: "lbn-pace" }, "Ironman"),
+            el("span", { className: "lbn-zone" }, " Training")
           )
         )
       ),
@@ -2978,10 +2977,10 @@ async function approveRequest(docId, requestData) {
 
   // Open pre-filled approval email if we have their address
   if (requestData.email) {
-    const subject = encodeURIComponent("You're in — Jax 140.6");
+    const subject = encodeURIComponent("You're in — Ironman Training");
     const body = encodeURIComponent(
       `Hi ${requestData.name},\n\n` +
-      `You're approved for Jax 140.6.\n\n` +
+      `You're approved for Ironman Training.\n\n` +
       `Log in here using the password you chose:\n` +
       `${APP_URL}\n\n` +
       `Fill in your profile and your season plan builds itself.\n\nJB`
@@ -3000,10 +2999,10 @@ async function rejectRequest(docId) {
 
   // Open pre-filled rejection email if we have their address
   if (req?.email) {
-    const subject = encodeURIComponent("Jax 140.6 — request update");
+    const subject = encodeURIComponent("Ironman Training — request update");
     const body = encodeURIComponent(
       `Hi ${req.name},\n\n` +
-      `Thanks for asking about Jax 140.6. It's a private app for a couple of athletes, so I can't add you right now.\n\nJB`
+      `Thanks for asking about Ironman Training. It's a private app for a couple of athletes, so I can't add you right now.\n\nJB`
     );
     window.open(`mailto:${req.email}?subject=${subject}&body=${body}`);
   }
