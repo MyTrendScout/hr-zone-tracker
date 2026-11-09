@@ -1,4 +1,4 @@
-// ironman-ui.js — Jax 140.6 screens (Ironman mode), built on App.js helpers.
+// ironman-ui.js — Ironman Training screens (Ironman mode), built on App.js helpers.
 // Loaded after App.js. Uses: state, setState, el, div, h2, h3, p, btn, field, input,
 // select, statBox, zoneBar, errorBanner, showError, db, hashPassword, loadCommandCenter.
 
@@ -44,9 +44,10 @@
     }
     return plan;
   }
-  async function saveTri(sub, tri) {
-    await db.collection("users").doc(sub.userId).collection("data").doc("profile").set({ tri }, { merge: true });
-    const profile = Object.assign({}, sub.profile, { tri });
+  async function saveTri(sub, tri, extra) {
+    const upd = Object.assign({ tri }, extra || {});
+    await db.collection("users").doc(sub.userId).collection("data").doc("profile").set(upd, { merge: true });
+    const profile = Object.assign({}, sub.profile, upd);
     if (sub.self) state.profile = profile;
     else state.coachAthlete = Object.assign({}, state.coachAthlete, { profile });
     if (state.allUsers) state.allUsers = state.allUsers.map(u => u.userId === sub.userId ? Object.assign({}, u, { profile }) : u);
@@ -81,13 +82,17 @@
   function SetupTri() {
     const sub = subject();
     const D = X.DEFAULT_TIMELINE;
-    const t = Object.assign({}, D, { planStart: X.todayISO(), hoursNow: 4, hoursPeak: 14, swimAbility: "", hasPower: false, hasTrainer: false, gymAccess: true, firstTimer: true }, sub.profile?.tri || {});
+    const t = Object.assign({}, D, { planStart: X.todayISO(), distance: "full", hoursNow: "", hoursPeak: "", hasPower: false, hasTrainer: false, gymAccess: true, firstTimer: true }, sub.profile?.tri || {});
+    const ev = t.eval || {};
     const editing = !!sub.profile?.tri;
+    const prof = sub.profile || {};
     const yn = (id, v) => select(id, [["Yes", "yes"], ["No", "no"]], v ? "yes" : "no");
+    const ynBlank = (id, v) => select(id, [["Select…", ""], ["Yes", "yes"], ["No", "no"]], v === true ? "yes" : v === false ? "no" : "");
+    const askBody = !prof.age || !prof.restingHR;   // athletes give these in step 1; coach-made setups may not have them
 
     const save = async () => {
       const tri = Object.assign({}, sub.profile?.tri || {}, {
-        raceName: val("t-race-name") || D.raceName,
+        raceName: val("t-race-name"),
         raceDate: val("t-race-date"),
         raceDateConfirmed: val("t-race-conf") === "yes",
         registerDate: val("t-reg") || null,
@@ -98,7 +103,6 @@
         planStart: val("t-start") || X.todayISO(),
         hoursNow: num("t-hrs-now"),
         hoursPeak: num("t-hrs-peak"),
-        swimAbility: val("t-swim-ability"),
         swim400Sec: X.parseTime(val("t-swim400")),
         hasPower: val("t-power") === "yes",
         p20: num("t-p20"),
@@ -111,20 +115,41 @@
         goalWeight: num("t-goal-wt"),
         firstTimer: val("t-first") === "yes",
         raceHeatF: num("t-heat") || D.raceHeatF,
-        notes: val("t-notes")
+        notes: val("t-notes"),
+        distance: val("t-dist") || "full"
       });
-      if (!tri.raceDate) return showError("Race date is required. Use the default if you're not sure.");
-      if (!tri.swimAbility) return showError("Pick a swim level. Be honest. It changes the swim sessions.");
+      const yes = id => val(id) === "yes" ? true : val(id) === "no" ? false : null;
+      tri.eval = Object.assign({}, ev, {
+        swimMax: val("e-swim-max") === "" ? null : Number(val("e-swim-max")),
+        openWater: yes("e-ow"),
+        swimHate: val("e-swim-like") === "hate",
+        swimLike: val("e-swim-like"),
+        bikeType: tri.bikeType,
+        rideLongest: val("e-ride"),
+        runLongestMi: num("e-run-mi"),
+        runsPerWeek: num("e-run-wk"),
+        raced: val("e-raced"),
+        doctorOK: val("e-doc") === "yes",
+        injuries: tri.notes || ""
+      }, askBody ? { age: num("e-age"), restingHR: num("e-rhr"), heightIn: num("e-ht") } : {});
+      tri.swimAbility = tri.swim400Sec ? (t.swimAbility === "learning" || t.swimAbility === "basic" ? "continuous" : (t.swimAbility || "continuous")) : X.swimAbilityFrom(tri.eval.swimMax);
+      delete tri.testCheck;   // fresh answers: the old "plan moved" note no longer applies
+      const curWt = num("t-cur-wt");
+      if (!tri.raceName) return showError("What race are you doing? Type its name.");
+      if (!curWt || curWt < 70 || curWt > 500) return showError("Enter your current weight in pounds.");
+      if (!tri.raceDate) return showError("Race date is required. A best guess is fine; you can change it later.");
+      if (tri.eval.swimMax == null) return showError("Pick your longest non-stop swim. Be honest: it sets where the swim plan starts.");
+      if (!tri.eval.rideLongest) return showError("Pick your longest ride in the last month (\"none\" is a fine answer).");
+      if (tri.eval.runLongestMi == null || tri.eval.runsPerWeek == null) return showError("Fill in your longest run and runs per week (0 is a fine answer).");
       if (!tri.hoursNow || !tri.hoursPeak) return showError("Fill in both hour fields.");
       if (tri.hoursPeak < tri.hoursNow) return showError("Peak hours should be at least what you train now.");
       if (tri.hoursPeak > 25) return showError("Peak over 25 hours a week is pro territory. Pick something real.");
       try { X.buildSeason(tri); } catch (e) { return showError(e.message); }
       setState({ loading: true });
       try {
-        await saveTri(sub, tri);
+        await saveTri(sub, tri, { weight: curWt });
         state.loading = false;
-        if (sub.self) setState({ view: "dashboard", error: null });
-        else setState({ view: "coach-season", error: null });
+        setState({ view: sub.self ? "readiness" : "coach-readiness", error: null });
       } catch (e) { setState({ loading: false, error: "Could not save: " + e.message }); }
     };
 
@@ -135,61 +160,143 @@
         p("Everything here can change later. Unknown? Leave it blank. The plan works from what it has, and tests fill in the rest."),
         errorBanner(),
         el("h3", { className: "im-form-h" }, "Timeline"),
-        field("Race", input({ id: "t-race-name", type: "text", value: t.raceName })),
         div("field-row",
-          field("Race date *", input({ id: "t-race-date", type: "date", value: t.raceDate })),
+          field("What race are you doing? *", input({ id: "t-race-name", type: "text", placeholder: "e.g. IRONMAN Florida", value: t.raceName || "" })),
+          field("Distance", select("t-dist", [["Full Ironman (140.6)", "full"], ["Half Ironman (70.3)", "half"], ["Olympic", "olympic"], ["Sprint", "sprint"]], t.distance || "full"))),
+        div("field-row",
+          field("Race date *", input({ id: "t-race-date", type: "date", value: t.raceDate || "" })),
           field("Date confirmed?", select("t-race-conf", [["Not yet (guess)", "no"], ["Confirmed", "yes"]], t.raceDateConfirmed ? "yes" : "no"))),
         div("field-row",
           field("Register on (approx.)", input({ id: "t-reg", type: "date", value: t.registerDate || "" })),
           field("Ironman build starts", input({ id: "t-build", type: "date", value: t.buildStart || "" }))),
         p("Before the build: Foundation (base and weight loss). Zone 1 only."),
         div("field-row",
-          field("Half Ironman", select("t-half-name", [
-            ["IRONMAN 70.3 Florida (Haines City)", "IRONMAN 70.3 Florida (Haines City)"],
-            ["Challenge Daytona (backup)", "Challenge Daytona"],
-            ["Other half", "Half Ironman"],
-            ["No half", ""]], t.halfName || "")),
+          field("Tune-up half Ironman (optional, about 5 months before)", input({ id: "t-half-name", type: "text", placeholder: "e.g. IRONMAN 70.3 Florida", value: t.halfName || "" })),
           field("Half date", input({ id: "t-half-date", type: "date", value: t.halfDate || "" }))),
         div("field-row",
           field("Plan starts", input({ id: "t-start", type: "date", value: t.planStart })),
-          field("Race-day heat (°F)", input({ id: "t-heat", type: "number", value: t.raceHeatF || 85 }))),
+          field("Race-day heat (°F)", input({ id: "t-heat", type: "number", value: t.raceHeatF || 80 }))),
 
-        el("h3", { className: "im-form-h" }, "Time"),
-        div("field-row",
-          field("Hours a week you train now *", input({ id: "t-hrs-now", type: "number", step: "0.5", min: "1", max: "25", value: t.hoursNow ?? "" })),
-          field("Most hours you can give at the peak *", input({ id: "t-hrs-peak", type: "number", step: "0.5", min: "4", max: "25", value: t.hoursPeak ?? "" }))),
-
+        el("h3", { className: "im-form-h" }, "Where you are today"),
+        el("p", { className: "im-note" }, "Facts, not feelings. What you actually did, not what you think you could do. Weeks 1 and 2 of the plan test these answers."),
         el("h3", { className: "im-form-h" }, "Swim"),
-        field("Swim level *", select("t-swim-ability", [
-          ["Select…", ""],
-          ["Learning: can't swim 50 yards non-stop", "learning"],
-          ["Basic: 100–300 yards with rests", "basic"],
-          ["Can swim 400+ yards non-stop", "continuous"],
-          ["Swim team / strong swimmer", "strong"]], t.swimAbility)),
+        field("Longest you can swim non-stop today *", select("e-swim-max", [
+          ["Select…", ""], ["Can't swim a pool length yet", "0"], ["About 25 yards (one length)", "25"], ["About 100 yards", "100"],
+          ["About 400 yards", "400"], ["1,000 yards or more", "1000"]], ev.swimMax == null ? "" : String(ev.swimMax))),
+        div("field-row",
+          field("Ever swum in open water (lake, ocean)?", ynBlank("e-ow", ev.openWater)),
+          field("Do you like swimming?", select("e-swim-like", [["Select…", ""], ["Like it", "like"], ["It's OK", "ok"], ["Hate it (fine, just tell us)", "hate"]], ev.swimLike || (ev.swimHate ? "hate" : "")))),
         field("400-yard time trial (M:SS, blank if not done)", input({ id: "t-swim400", type: "text", placeholder: "e.g. 8:30", value: t.swim400Sec ? X.fmtTime(t.swim400Sec) : "" })),
 
         el("h3", { className: "im-form-h" }, "Bike"),
         div("field-row",
-          field("Bike", select("t-bike", [["No bike yet", "none"], ["Road bike", "road"], ["Tri bike", "tri"], ["Other", "other"]], t.bikeType || "none")),
-          field("Indoor trainer?", yn("t-trainer", t.hasTrainer))),
+          field("Bike you own and ride", select("t-bike", [["No bike yet", "none"], ["Road bike", "road"], ["Tri bike", "tri"], ["Other", "other"]], t.bikeType || "none")),
+          field("Longest ride in the last month *", select("e-ride", [["Select…", ""], ["None", "none"], ["Under 1 hour", "lt1"], ["1 to 2 hours", "1to2"], ["2 to 3 hours", "2to3"], ["3+ hours", "3plus"]], ev.rideLongest || ""))),
         div("field-row",
-          field("Power meter?", yn("t-power", t.hasPower)),
-          field("20-min power (watts, blank if none)", input({ id: "t-p20", type: "number", value: t.p20 || "" }))),
+          field("Indoor trainer?", yn("t-trainer", t.hasTrainer)),
+          field("Power meter?", yn("t-power", t.hasPower))),
+        field("20-min power (watts, blank if none)", input({ id: "t-p20", type: "number", value: t.p20 || "" })),
 
         el("h3", { className: "im-form-h" }, "Run"),
-        field("Recent 5K time (blank if unknown)", input({ id: "t-5k", type: "text", placeholder: "e.g. 27:30", value: t.run5kSec ? X.fmtTime(t.run5kSec) : "" })),
+        div("field-row",
+          field("Longest run in the last month (miles) *", input({ id: "e-run-mi", type: "number", step: "0.5", min: "0", placeholder: "e.g. 4", value: ev.runLongestMi ?? "" })),
+          field("Runs per week, lately *", input({ id: "e-run-wk", type: "number", min: "0", max: "14", placeholder: "e.g. 3", value: ev.runsPerWeek ?? "" }))),
+        div("field-row",
+          field("Ever raced a 10K, half or marathon?", select("e-raced", [["None of those", "none"], ["10K", "10k"], ["Half marathon", "half"], ["Marathon", "marathon"]], ev.raced || "none")),
+          field("Recent 5K time (blank if unknown)", input({ id: "t-5k", type: "text", placeholder: "e.g. 27:30", value: t.run5kSec ? X.fmtTime(t.run5kSec) : "" }))),
+
+        el("h3", { className: "im-form-h" }, "Time"),
+        div("field-row",
+          field("Hours a week you train now *", input({ id: "t-hrs-now", type: "number", step: "0.5", min: "1", max: "25", placeholder: "e.g. 4", value: t.hoursNow ?? "" })),
+          field("Real hours a week you can give (at most) *", input({ id: "t-hrs-peak", type: "number", step: "0.5", min: "4", max: "25", placeholder: "e.g. 14", value: t.hoursPeak ?? "" }))),
 
         el("h3", { className: "im-form-h" }, "Gear, body, history"),
         div("field-row",
           field("Watch", select("t-watch", [["None", "none"], ["Garmin", "garmin"], ["Apple Watch", "apple"], ["COROS", "coros"], ["Polar", "polar"], ["Wahoo", "wahoo"], ["Other", "other"]], t.watch || "none")),
           field("Chest HR strap?", yn("t-strap", t.hrStrap))),
         div("field-row",
-          field("Gym access?", yn("t-gym", t.gymAccess)),
+          field("Current weight (lbs) *", input({ id: "t-cur-wt", type: "number", step: "0.1", placeholder: "e.g. 228", value: sub.profile?.weight || "" })),
           field("Goal weight (lbs, optional)", input({ id: "t-goal-wt", type: "number", step: "0.5", value: t.goalWeight || "" }))),
-        field("First Ironman?", yn("t-first", t.firstTimer !== false)),
-        field("Injuries or anything the coach should know", input({ id: "t-notes", type: "text", value: t.notes || "" })),
+        askBody ? div("field-row",
+          field("Age", input({ id: "e-age", type: "number", min: "14", max: "90", value: ev.age || prof.age || "" })),
+          field("Height (inches)", input({ id: "e-ht", type: "number", min: "48", max: "90", placeholder: "e.g. 70", value: ev.heightIn || "" })),
+          field("Resting HR (bpm)", input({ id: "e-rhr", type: "number", min: "35", max: "100", value: ev.restingHR || prof.restingHR || "" }))) : null,
+        div("field-row",
+          field("Gym access?", yn("t-gym", t.gymAccess)),
+          field("First Ironman?", yn("t-first", t.firstTimer !== false))),
+        field("Injuries, now or past, or anything the coach should know", input({ id: "t-notes", type: "text", value: t.notes || "" })),
+        field("Doctor's OK to train hard?", select("e-doc", [["Not yet", "no"], ["Yes, I've had a check-up", "yes"]], ev.doctorOK ? "yes" : "no")),
         btn(editing ? "Save setup" : "Build my season →", save)
       ));
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // READINESS: setup result, dashboard card, coach card
+  // ─────────────────────────────────────────────────────────────
+  const LEVEL = { red: { dot: "🔴", cls: "im-rd-red", word: "Red" }, yellow: { dot: "🟡", cls: "im-rd-yellow", word: "Yellow" },
+                  green: { dot: "🟢", cls: "im-rd-green", word: "Green" }, unknown: { dot: "⚪", cls: "", word: "No date" } };
+  function readinessOf(sub) { const t = sub.profile?.tri; return t && t.eval ? X.readiness(t) : null; }
+
+  async function switchRace(sub, opt) {
+    const t = sub.profile.tri;
+    const nt = Object.assign({}, t, { distance: opt.distance, raceDate: opt.date, raceDateConfirmed: false,
+      raceName: `${opt.label} (pick one near ${opt.month})`, halfName: null, halfDate: null, previousRace: { name: t.raceName, date: t.raceDate, distance: t.distance || "full" } });
+    setState({ loading: true });
+    await saveTri(sub, nt);
+    setState({ loading: false, error: null });
+  }
+
+  function readinessCard(sub, opts) {
+    opts = opts || {};
+    const r = readinessOf(sub);
+    const t = sub.profile?.tri || {};
+    if (!r) return opts.compact ? null : div("card", h2("Readiness"), p("No evaluation yet. Open setup and answer the 'Where you are today' questions."),
+      btn("Answer them", () => setState({ view: sub.self ? "setup-tri" : "coach-setup" }), "btn-secondary btn-sm"));
+    const L = LEVEL[r.level];
+    const sportRow = k => {
+      const x = r.scores[k];
+      return div("im-rd-sport", el("span", null, `${SPORT_ICON[k]} ${k[0].toUpperCase() + k.slice(1)}`),
+        el("strong", { className: `im-rd-lbl im-rd-${x.label.toLowerCase()}` }, x.label),
+        el("span", { className: "im-meta" }, `${x.now.toLocaleString()} of ${x.race.toLocaleString()} ${x.unit} (${x.pctOfRace}%)`));
+    };
+    const moved = t.testCheck ? div("banner banner-warning", `${t.testCheck.msg} `, el("ul", null, t.testCheck.changes.map(c => el("li", null, c.msg)))) : null;
+    if (opts.compact) {
+      return div(`im-rd im-rd-compact ${L.cls}`,
+        el("strong", null, `${L.dot} ${L.word}: ${r.headline}`),
+        r.weeksOut != null ? el("span", { className: "im-meta" }, ` ${r.weeksOut} wks out, about ${r.weeksNeeded} needed for a ${r.distanceLabel}.`) : null,
+        div("im-rd-mini", ["swim", "bike", "run"].map(k => el("span", { className: `im-rd-lbl im-rd-${r.scores[k].label.toLowerCase()}` }, `${SPORT_ICON[k]} ${r.scores[k].label}`))),
+        t.testCheck ? el("div", { className: "im-flag" }, "Tests came in under the answers. Plan moved.") : null);
+    }
+    const smaller = r.options.filter(o => o.distance !== r.distance && (X.DISTANCES[o.distance] ? true : false) && o.weeks < r.weeksNeeded);
+    const same = r.options.find(o => o.distance === r.distance);
+    return div(`card im-rd ${L.cls}`,
+      div("im-rd-head", el("span", { className: "im-rd-dot" }, L.dot), div(null, h2(`${L.word}: ${r.headline}`),
+        el("p", { className: "im-note" }, `${t.raceName || "Race"} · ${r.distanceLabel} · ${t.raceDate ? fmtDate(t.raceDate, { year: "numeric" }) : "no date"}`))),
+      moved,
+      div("im-rd-sports", ["swim", "bike", "run"].map(sportRow)),
+      el("p", { className: "im-note" }, "Starting = a long way to go. Building = on the way. Ready = close to what training for this distance needs."),
+      r.reasons.length ? el("ul", { className: "im-list" }, r.reasons.map(x => el("li", null, x))) : null,
+      r.notes.length ? el("ul", { className: "im-list im-rd-notes" }, r.notes.map(x => el("li", null, x))) : null,
+      r.level === "red" ? div("im-rd-opts",
+        h3("Realistic options"),
+        el("ul", { className: "im-list" },
+          smaller.map(o => el("li", null, `${o.label}: in about ${o.months} month${o.months > 1 ? "s" : ""} (${o.month})${o.fitsRaceDate ? ", fits before your race date" : ""}.`)),
+          same ? el("li", null, `${same.label}: in about ${same.months} months (${same.month}).`) : null),
+        el("p", { className: "im-note" }, "Smart move: race a shorter one first, then build to the full. Switch the plan to a stepping-stone race? You pick the actual race later. Your original race is saved."),
+        div("im-actions", smaller.map(o =>
+          btn(`Switch to ${/^[AEIOU]/.test(o.label) ? "an" : "a"} ${o.label} (${o.month})`, () => switchRace(sub, o), "btn-secondary btn-sm")))) : null,
+      r.level === "yellow" ? el("p", { className: "im-note" }, "The plan already caps weekly growth at about 10%. Miss a week? Don't make it up by doubling the next one.") : null,
+      el("p", { className: "im-note" }, "This warns. It never blocks. Weeks 1 and 2 test the answers; if the tests come in lower, this updates and the plan moves."));
+  }
+
+  function ReadinessPage() {
+    const sub = subject();
+    return div("page im-page",
+      sub.self ? div("step-indicator", "Your readiness check") : header("Readiness", sub),
+      errorBanner(),
+      readinessCard(sub),
+      btn(sub.self ? "Go to my dashboard →" : "See their season →", () => setState({ view: sub.self ? "dashboard" : "coach-season", error: null })),
+      btn("Change my answers", () => setState({ view: sub.self ? "setup-tri" : "coach-setup" }), "btn-secondary"));
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -348,6 +455,7 @@
       h2(beforeStart ? `Plan starts ${fmtDate(season.weeks[0].weekStart)}` : `Today — ${todayDay ? todayDay.full : ""}`),
       w.type === "recovery" ? div("cutback-badge", "Recovery week. Keep it easy.") : null,
       w.testWeek ? div("banner banner-info", "Test week: 20-min bike test Tuesday, 5K Thursday, 400 swim Friday. Enter results in Tests.") : null,
+      w.startTests ? div("banner banner-info", w.idx === 0 ? "Start tests, week 1: 20-min bike test Tuesday, swim test Friday. Enter results in Tests. They check your setup answers." : "Start tests, week 2: 5K Thursday. Enter the time in Tests.") : null,
       todayLogs.length ? div("today-complete", div("today-complete-header", `✓ Logged: ${todayLogs.map(l => l.type).join(", ")}`)) : null,
       todayDay ? todayDay.sessions.map(s => sessionRow(s)) : p("Rest."),
       btn("Log a workout →", () => setState({ view: "log-workout" }), "btn-log-today"));
@@ -388,7 +496,7 @@
           btn("Logout", doLogout, "btn-logout"))),
       errorBanner(),
       div("dashboard-grid",
-        div("dash-col", overview, weekCard, weightCard(sub, season, idx)),
+        div("dash-col", overview, readinessCard(sub), weekCard, weightCard(sub, season, idx)),
         div("dash-col", todayCard, menu, zonesPaces(sub))));
   }
 
@@ -449,7 +557,7 @@
               el("span", { className: "im-wk-t" }, w.typeLabel),
               el("span", { className: "im-wk-h" }, w.hours ? `${w.hours} h` : "—"),
               w.strength.perWeek ? el("span", { className: "im-wk-g" }, `gym ${w.strength.perWeek}×`) : null,
-              w.testWeek ? el("span", { className: "im-wk-g" }, "tests") : null,
+              w.testWeek || w.startTests ? el("span", { className: "im-wk-g" }, "tests") : null,
               w.events.filter(e => e.kind !== "build").map(e => el("span", { className: `im-ev im-ev-${e.kind}` }, e.label)));
             return chip;
           }))))));
@@ -531,20 +639,28 @@
     const save = async () => {
       const date = val("ts-date") || X.todayISO();
       const s400 = X.parseTime(val("ts-400")), p20 = num("ts-p20"), k5 = X.parseTime(val("ts-5k"));
-      if (!s400 && !p20 && !k5) return showError("Enter at least one test result.");
+      const swShort = num("ts-swshort"), walked = val("ts-walked") === "yes", stopped = val("ts-stopped") === "yes", rideDone = val("ts-ride") === "yes";
+      if (!s400 && !p20 && !k5 && !swShort && !stopped && !rideDone) return showError("Enter at least one test result.");
       if (s400 && (s400 < 180 || s400 > 1800)) return showError("400 time looks off. Use M:SS, e.g. 8:30.");
       if (k5 && (k5 < 780 || k5 > 3600)) return showError("5K time looks off. Use M:SS, e.g. 27:30.");
       const tests = (t.tests || []).slice();
       const nt = Object.assign({}, t);
       if (s400) { nt.swim400Sec = s400; tests.push({ date, kind: "swim400", value: s400 }); if (nt.swimAbility === "learning" || nt.swimAbility === "basic") nt.swimAbility = "continuous"; }
       if (p20)  { nt.p20 = p20; nt.hasPower = true; tests.push({ date, kind: "p20", value: p20 }); }
-      if (k5)   { nt.run5kSec = k5; tests.push({ date, kind: "run5k", value: k5 }); }
+      if (k5)   { nt.run5kSec = k5; tests.push({ date, kind: "run5k", value: k5, walked }); }
+      if (swShort && !s400) tests.push({ date, kind: "swimShort", value: swShort });
+      if (!p20 && (stopped || rideDone)) tests.push({ date, kind: "ride20", stopped });
+      else if (p20 && stopped) tests[tests.length - 1].stopped = true;
       nt.tests = tests;
+      // Trust but verify: weaker than the setup answers → lower them and re-ramp
+      const chk = nt.eval ? X.applyTestCheck(nt) : { tri: nt, changes: [] };
+      const out = chk.changes.length ? Object.assign(chk.tri, { testCheck: Object.assign({}, chk.tri.testCheck, { changes: ((t.testCheck || {}).changes || []).concat(chk.tri.testCheck.changes) }) }) : nt;
       setState({ loading: true });
-      await saveTri(sub, nt);
+      await saveTri(sub, out);
       setState({ loading: false, error: null });
     };
-    const fmtTest = x => x.kind === "p20" ? `Bike 20-min: ${x.value} W` : x.kind === "swim400" ? `Swim 400: ${X.fmtTime(x.value)}` : `Run 5K: ${X.fmtTime(x.value)}`;
+    const fmtTest = x => x.kind === "p20" ? `Bike 20-min: ${x.value} W${x.stopped ? " (cut short)" : ""}` : x.kind === "ride20" ? `Bike 20-min (no power)${x.stopped ? ": cut short" : ""}`
+      : x.kind === "swimShort" ? `Swim: ${x.value} yds non-stop` : x.kind === "swim400" ? `Swim 400: ${X.fmtTime(x.value)}` : `Run 5K: ${X.fmtTime(x.value)}${x.walked ? " (walk breaks)" : ""}`;
     return div("page im-page",
       header("Tests", sub),
       div("card",
@@ -560,7 +676,16 @@
           field("Swim 400 (M:SS)", input({ id: "ts-400", type: "text", placeholder: t.swim400Sec ? X.fmtTime(t.swim400Sec) : "e.g. 8:30" })),
           field("Bike 20-min (W)", input({ id: "ts-p20", type: "number", placeholder: t.p20 || "e.g. 200" })),
           field("Run 5K (M:SS)", input({ id: "ts-5k", type: "text", placeholder: t.run5kSec ? X.fmtTime(t.run5kSec) : "e.g. 27:30" }))),
+        el("p", { className: "im-note" }, "Didn't go to plan? Say so. It's how the plan gets the start right."),
+        div("field-row",
+          field("Couldn't swim 400 non-stop? Yards you got", input({ id: "ts-swshort", type: "number", min: "0", max: "399", placeholder: "e.g. 150" })),
+          field("Walked during the 5K?", select("ts-walked", [["No", "no"], ["Yes", "yes"]], "no"))),
+        div("field-row",
+          field("Did the 20-min ride test (no power meter)?", select("ts-ride", [["No", "no"], ["Yes", "yes"]], "no")),
+          field("Had to stop or back way off in it?", select("ts-stopped", [["No", "no"], ["Yes", "yes"]], "no"))),
         btn("Save results", save)),
+      t.testCheck ? div("card", div("banner banner-warning", t.testCheck.msg), el("ul", { className: "im-list" }, t.testCheck.changes.map(c => el("li", null, c.msg))),
+        btn("See readiness", () => setState({ view: sub.self ? "readiness" : "coach-readiness" }), "btn-secondary btn-sm")) : null,
       div("card", h2("History"), hist.length ? el("ul", { className: "im-list" }, hist.map(x => el("li", null, `${x.date} · ${fmtTest(x)}`))) : p("No tests yet.")),
       zonesPaces(sub));
   }
@@ -603,7 +728,7 @@
   function RacePlanPage() {
     const sub = subject();
     const t = sub.profile.tri || {};
-    const o = racePlanOpts || { distance: "full", heatF: t.raceHeatF || 85, firstTimer: t.firstTimer !== false };
+    const o = racePlanOpts || { distance: t.distance === "half" ? "half" : "full", heatF: t.raceHeatF || 80, firstTimer: t.firstTimer !== false };
     const gen = () => {
       racePlanOpts = { distance: val("rp-dist"), heatF: num("rp-heat") ?? 85, firstTimer: val("rp-first") === "yes" };
       setState({});
@@ -733,6 +858,7 @@
           statBox(w.typeLabel, `${hrs(plan.totalMin)} h`),
           statBox("Logged", `${comp.pct}%`)),
         el("div", { className: "im-bar" }, el("i", { style: { width: Math.min(100, comp.pct) + "%" } })),
+        readinessCard(sub, { compact: true }),
         plan.violations.length ? div("flag", `⚠️ ${plan.violations.length} safety issue(s) this week`) : div("im-ok", "✓ Safety checks passed"),
         el("p", { className: "im-note" }, `Race: ${t.raceName}, ${fmtDate(t.raceDate, { year: "numeric" })}${t.raceDateConfirmed ? "" : " (guess)"}${ev ? ` · Next: ${ev.label} in ${daysTo(ev.date)} days` : ""}`),
         el("p", { className: "im-note" }, `Tests: ${tests}`),
@@ -742,6 +868,7 @@
         div("im-actions",
           btn("This week", () => open(u, "coach-week"), "btn-secondary btn-sm"),
           btn("Season", () => open(u, "coach-season"), "btn-secondary btn-sm"),
+          btn("Readiness", () => open(u, "coach-readiness"), "btn-secondary btn-sm"),
           btn("Edit setup", () => open(u, "coach-setup"), "btn-secondary btn-sm"),
           btn("Race plan", () => open(u, "coach-race-plan"), "btn-secondary btn-sm"),
           btn("Review", () => open(u, "coach-race-review"), "btn-secondary btn-sm")));
@@ -749,7 +876,7 @@
 
     const backup = () => {
       const blob = new Blob([db.exportJSON()], { type: "application/json" });
-      const a = el("a", { href: URL.createObjectURL(blob), download: `jax1406-backup-${X.todayISO()}.json` });
+      const a = el("a", { href: URL.createObjectURL(blob), download: `ironman-backup-${X.todayISO()}.json` });
       document.body.appendChild(a); a.click(); a.remove();
     };
 
@@ -777,6 +904,8 @@
     "weight":            WeightPage,
     "race-plan":         RacePlanPage,
     "race-review":       RaceReviewPage,
+    "readiness":         ReadinessPage,
+    "coach-readiness":   ReadinessPage,
     "coach-setup":       SetupTri,
     "coach-season":      SeasonPage,
     "coach-week":        WeekPage,
@@ -784,7 +913,7 @@
     "coach-race-review": RaceReviewPage
   };
   // Athlete-only views need a finished setup
-  const needsTri = new Set(["season", "week", "tests", "weight", "race-plan", "race-review", "coach-season", "coach-week", "coach-race-plan", "coach-race-review"]);
+  const needsTri = new Set(["season", "week", "tests", "weight", "race-plan", "race-review", "readiness", "coach-readiness", "coach-season", "coach-week", "coach-race-plan", "coach-race-review"]);
   const guarded = {};
   Object.entries(views).forEach(([k, fn]) => {
     guarded[k] = () => {

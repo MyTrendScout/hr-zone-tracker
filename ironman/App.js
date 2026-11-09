@@ -1,4 +1,4 @@
-// App.js — Jax 140.6 (copied from MyPaceZone v24, then adapted for Ironman training)
+// App.js — Ironman Training (copied from MyPaceZone v24, then adapted for Ironman training)
 
 // ═══════════════════════════════════════════════════════════════
 // FIREBASE

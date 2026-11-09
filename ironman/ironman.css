@@ -107,3 +107,23 @@ textarea { width: 100%; font: inherit; padding: 8px; border: 1px solid #ddd; bor
 
 /* coach view gets the full width when it has athlete cards */
 .page:has(.im-coach-grid) { max-width: 1100px; }
+
+/* readiness */
+.im-rd { border-left: 6px solid #9aa3ad; }
+.im-rd-red { border-left-color: #c0392b; }
+.im-rd-yellow { border-left-color: #d4a017; }
+.im-rd-green { border-left-color: #0a7d4f; }
+.im-rd-head { display: flex; gap: 10px; align-items: flex-start; }
+.im-rd-head h2 { margin: 0; }
+.im-rd-dot { font-size: 28px; line-height: 1; }
+.im-rd-sports { display: grid; gap: 6px; margin: 10px 0; }
+.im-rd-sport { display: grid; grid-template-columns: 90px 90px 1fr; gap: 8px; align-items: center; font-size: 14px; }
+.im-rd-lbl { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; text-align: center; }
+.im-rd-starting { background: #fde6dc; color: #9a3412; }
+.im-rd-building { background: #fff3cd; color: #7a5a00; }
+.im-rd-ready { background: #dcf3e8; color: #0a7d4f; }
+.im-rd-notes li { color: #5b6470; }
+.im-rd-opts h3 { margin: 12px 0 4px; font-size: 1rem; }
+.im-rd-compact { padding: 8px 10px; margin: 8px 0; background: #fafbfc; border-radius: 6px; font-size: 13px; }
+.im-rd-mini { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+@media (max-width: 600px) { .im-rd-sport { grid-template-columns: 80px 80px 1fr; font-size: 13px; } }

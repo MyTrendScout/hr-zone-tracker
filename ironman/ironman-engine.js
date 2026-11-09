@@ -1,4 +1,4 @@
-// ironman-engine.js — Jax 140.6 training engine
+// ironman-engine.js — Ironman Training engine
 // Pure functions only (no DOM, no Firebase). Loaded by the browser as window.IM
 // and by node tests via require().
 //
@@ -27,18 +27,18 @@
   function todayISO() { const n = new Date(); return toISO(new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()))); }
 
   // ─────────────────────────────────────────────────────────────
-  // DEFAULT TIMELINE (Jake). Every field is editable per athlete.
+  // DEFAULT TIMELINE. Blank on purpose: each athlete picks their own race in setup.
   // ─────────────────────────────────────────────────────────────
   const DEFAULT_TIMELINE = {
-    raceName:      "IRONMAN Jacksonville",
-    raceDate:      "2028-05-13",   // 2028 date not announced. Mid-May Saturday guess. Edit when it's out.
+    raceName:      "",
+    raceDate:      "",
     raceDateConfirmed: false,
-    registerDate:  "2027-05-15",   // register on site at the 2027 race (date approximate)
-    buildStart:    "2027-05-17",   // Monday after registering
-    halfName:      "IRONMAN 70.3 Florida (Haines City)",
-    halfDate:      "2027-12-12",   // ran Dec 13 in 2026; mid-December Sunday guess
-    backupHalf:    "Challenge Daytona (early December)",
-    raceHeatF:     85              // Jacksonville mid-May afternoon high, roughly
+    registerDate:  null,
+    buildStart:    null,           // blank = the engine lays out the season back from the race
+    halfName:      "",
+    halfDate:      null,
+    backupHalf:    "",
+    raceHeatF:     80              // typical warm race day; athlete can change it
   };
 
   // ─────────────────────────────────────────────────────────────
@@ -65,6 +65,14 @@
     "race":          "Race week",
     "off":           "Off"
   };
+  // Race distances. "target" = the longest single session you need to reach in training
+  // (swim yards non-stop, ride minutes, run miles), not the race itself.
+  const DISTANCES = {
+    sprint:  { label: "Sprint",            race: { swimYd: 820,  bikeMi: 12.4, runMi: 3.1 },  target: { swimYd: 300,  rideMin: 60,  runMi: 3 },  finishWeeks: 2, minPeakHours: 4,  longRideCap: 90,  longRunCap: 50,  raceMin: 90 },
+    olympic: { label: "Olympic",           race: { swimYd: 1640, bikeMi: 24.8, runMi: 6.2 },  target: { swimYd: 1000, rideMin: 105, runMi: 6 },  finishWeeks: 3, minPeakHours: 6,  longRideCap: 150, longRunCap: 75,  raceMin: 180 },
+    half:    { label: "Half Ironman 70.3", race: { swimYd: 2112, bikeMi: 56,   runMi: 13.1 }, target: { swimYd: 1650, rideMin: 180, runMi: 10 }, finishWeeks: 4, minPeakHours: 8,  longRideCap: 240, longRunCap: 120, raceMin: 360 },
+    full:    { label: "Full Ironman",      race: { swimYd: 4224, bikeMi: 112,  runMi: 26.2 }, target: { swimYd: 3000, rideMin: 330, runMi: 18 }, finishWeeks: 6, minPeakHours: 11, longRideCap: 390, longRunCap: 180, raceMin: 720 }
+  };
   const EASY_TYPES = new Set(["recovery", "intro", "taper", "half-race", "race", "off"]);
   const NO_INTENSITY_PHASES = new Set(["foundation", "aerobic-base"]);
 
@@ -81,8 +89,9 @@
     const hoursNow  = Math.max(2, Number(cfg.hoursNow) || 5);
     const hoursPeak = Math.max(hoursNow, Number(cfg.hoursPeak) || 14);
 
+    const distance = DISTANCES[cfg.distance] ? cfg.distance : "full";
     let H = null;
-    if (cfg.halfDate) {
+    if (cfg.halfDate && distance === "full") {
       const h = weeksBetween(startMon, mondayOf(cfg.halfDate));
       if (h >= 1 && h <= R - 8) H = h;
     }
@@ -93,7 +102,7 @@
     let thresholdStart, powerStart;
     if (H != null) { thresholdStart = H - 4; powerStart = H - 12; }
     else           { thresholdStart = R - 6 - 12; powerStart = thresholdStart - 8; }
-    powerStart     = Math.max(powerStart, B);
+    powerStart     = Math.max(powerStart, B, 2);   // weeks 1-2 are start tests + easy base, never interval weeks
     thresholdStart = Math.max(thresholdStart, powerStart);
 
     const foundationEnd = Number(cfg.foundationPeakHours) ||
@@ -161,7 +170,7 @@
       if (i === R) events.push({ date: cfg.raceDate, kind: "race", label: cfg.raceName || "Race day" });
 
       weeks.push({
-        idx: i, weekNo: i + 1, weekStart, weekEnd, type, typeLabel: WEEK_TYPES[type],
+        idx: i, weekNo: i + 1, weekStart, weekEnd, type, typeLabel: WEEK_TYPES[type], distance,
         phase, phaseLabel: PHASES[phase].label, block, blockPos: pos,
         hours, strength: strengthFor(i, B, R, phase, type), events
       });
@@ -172,7 +181,31 @@
       const w = weeks[i];
       if (w.type === "build" && w.blockPos === 1 && (w.phase === "power-base" || w.phase === "threshold" || w.phase === "race-build")) w.testWeek = true;
     }
-    return { startMon, raceIdx: R, halfIdx: H, buildIdx: B, weeks };
+    // Start tests: week 1 = bike + swim, week 2 = run. Checks the evaluation answers.
+    weeks[0].startTests = ["bike", "swim"];
+    weeks[1].startTests = ["run"];
+    const realisticPeak = capRamp(weeks, hoursNow);
+    return { startMon, raceIdx: R, halfIdx: H, buildIdx: B, distance, weeks, realisticPeak, hoursPeakAsked: hoursPeak };
+  }
+
+  // Safe growth: a hard week is never more than ~10% over the last hard week.
+  // Easy weeks are sized off the last hard week so they stay easy after a cap.
+  const RAMP = 0.10;
+  const CAP_VS_LAST_HARD = { "build": 1 + RAMP, "overload-run": 1 + RAMP, "overload-bike": 1 + RAMP, "sharpen": 0.7,
+                             "recovery": 0.55, "intro": 1.0, "half-race": 0.65, "taper": 0.7, "race": 0.4 };
+  function capRamp(weeks, hoursNow) {
+    let lastHard = hoursNow, peak = 0;
+    for (const w of weeks) {
+      const k = CAP_VS_LAST_HARD[w.type];
+      if (k == null) continue;
+      const cap = Math.max(2, Math.floor(lastHard * k * 10) / 10);
+      if (w.hours > cap) { w.hours = cap; w.capped = true; }
+      if (w.type === "build" || w.type === "overload-run" || w.type === "overload-bike" || w.type === "sharpen") {
+        lastHard = w.hours;
+        if (w.type === "build") peak = Math.max(peak, w.hours);   // overload weeks sit on top of this
+      }
+    }
+    return peak;
   }
 
   function strengthFor(i, B, R, phase, type) {
@@ -248,8 +281,6 @@
   // ath: { zones, swim400Sec, p20, hasPower, run5kSec, swimAbility, hasTrainer }
   // ─────────────────────────────────────────────────────────────
   const LONG_RUN_SPLIT_MIN = 120;     // split the long run above this
-  const LONG_RUN_CAP = 180;
-  const LONG_RIDE_CAP = 390;
   const T_RUN_CAP = 45;
   const SWIM_CAP = 70;                // weekday swims stay under the long-swim line
 
@@ -289,12 +320,13 @@
     if (bikeWed < 30) { bikeSat += bikeWed; bikeWed = 0; }
     if (bikeTue > 150) { bikeSat += bikeTue - 150; bikeTue = 150; }   // key ride never becomes a long ride
     bikeWed = Math.min(bikeWed, 120);
-    bikeSat = Math.min(bikeSat, LONG_RIDE_CAP);
+    const D = DISTANCES[week.distance] || DISTANCES.full;
+    bikeSat = Math.min(bikeSat, D.longRideCap);
     // Run: Tue off-bike, Thu key, Sat off-bike, Sun long
     let runTue = round5(runMin * 0.12), runThu = round5(runMin * 0.30), runSat = round5(runMin * 0.13), runSun = round5(runMin * 0.45);
     runTue = clamp(runTue, 10, 30); runSat = clamp(runSat, 10, T_RUN_CAP);
     if (runThu > 80) { runSun += runThu - 80; runThu = 80; }          // key run never becomes a long run
-    runSun = Math.min(runSun, LONG_RUN_CAP);
+    runSun = Math.min(runSun, D.longRunCap);
     // Swim: Mon recovery, Wed steady, Fri key
     let swimMon = round5(swimMin * 0.30), swimWed = round5(swimMin * 0.25), swimFri = round5(swimMin * 0.45);
     if (swimMin < 75) { swimFri = round5(swimMin * 0.55); swimMon = round5(swimMin * 0.45); swimWed = 0; }
@@ -326,7 +358,7 @@
     if (week.strength.perWeek === 2) add(3, strengthSession(week.strength.phase));
 
     // ── Friday: key swim and core
-    add(4, swimSession("key", swimFri, sw, learning, week));
+    add(4, (week.startTests || []).includes("swim") ? swimTest(swimFri, learning) : swimSession("key", swimFri, sw, learning, week));
     add(4, session("core", "Core", coreMin, "", "15 minutes: back extensions, push-ups, sit-ups, planks. Three rounds.", {}));
     if (week.strength.perWeek >= 3) add(4, strengthSession(week.strength.phase));
 
@@ -391,6 +423,13 @@
     return session("swim", "Key swim", min, "key", main + yd, { key: true, keySwim: true });
   }
 
+  function swimTest(min, learning) {
+    const d = learning
+      ? "Start test: warm up easy, then swim as far as you can without stopping, up to 400 yds. Stop when you have to. Enter how far you got in Tests. No shame in 25 yds: it sets where the plan starts."
+      : "Start test: warm up 600 easy, then a 400 time trial, all out, even pace. Couldn't swim the whole 400 non-stop? Enter how far you got instead. Results go in Tests.";
+    return session("swim", "Swim test", min, "test", d, { key: true, keySwim: true, test: true });
+  }
+
   function strengthSession(phase) {
     const list = "leg press, squat (hack or goblet), lat pulldown, seated row, leg extension, hamstring curl";
     if (phase === "adapt") return session("strength", "Gym: adaptation", 30, "", `3 sets each of ${list}: 20, 15, 10 reps. 90 s rest. Light enough to finish clean.`, {});
@@ -400,6 +439,11 @@
 
   function keyBike(week, min, ath, z, intensityAllowed) {
     const bt = ath.hasPower ? bikeTargets(ath.p20) : null;
+    if ((week.startTests || []).includes("bike")) {
+      return session("bike", "Bike test (20 min)", Math.max(min, 60), "test",
+        "Start test: 20 min easy warm-up, then 20 minutes as hard as you can hold evenly (trainer is best). Power meter: note average watts. No power: note average HR and how far you got. Had to stop or back way off? Tick that in Tests. No bike yet? Skip it and do it in your first week with one.",
+        { key: true, intense: true, test: true });
+    }
     if (!intensityAllowed) {
       return session("bike", week.phase === "foundation" ? "Key ride (Z1)" : "Key ride (Z1 steady)", min, "Z1",
         `${hrRange(z && z.bikeZ1)}. 95+ rpm all ride. One 30-second surge each half hour. ${trainerNote(min)}`, { key: true });
@@ -426,13 +470,18 @@
 
   function keyRun(week, min, ath, z, intensityAllowed) {
     const rt = runTargets(ath.run5kSec);
+    if ((week.startTests || []).includes("run")) {
+      return session("run", "5K test", Math.max(min, 45), "test",
+        "Start test: warm up 15 min easy, then a 5K as fast as you can hold evenly (track or flat loop). Walk breaks are fine, but tick them in Tests. Enter the time.",
+        { key: true, intense: true, test: true });
+    }
     if (!intensityAllowed) {
       return session("run", week.phase === "foundation" ? "Key run (Z1)" : "Key run (Z1 steady)", min, "Z1",
         `${hrRange(z && z.z1)}. Cadence drill: 30 s at 100+ spm, 1 min normal, repeat 5 times mid-run.`, { key: true });
     }
     let main;
     if (week.testWeek) main = "Test: warm up 15 min, then a 5K all-out (track or flat loop). Enter the time in Tests.";
-    else if (week.phase === "power-base") main = "Hill circuit: 1 min up a 6–10% hill with a long stride and slow cadence, 3 min easy on top, quick light steps back down. 6–8 times. Flat Jacksonville? Use a bridge or a parking garage ramp.";
+    else if (week.phase === "power-base") main = "Hill circuit: 1 min up a 6–10% hill with a long stride and slow cadence, 3 min easy on top, quick light steps back down. 6–8 times. No hills nearby? Use a bridge or a parking garage ramp.";
     else {
       const pos = week.type === "overload-run" ? 3 : (week.blockPos || 2);
       if (week.type === "sharpen") main = rt ? `3×800 at ${fmtTime(rt.half)}/mi, 2.5 min jog.` : "3×800 hard and even, 2.5 min jog.";
@@ -446,16 +495,17 @@
   function raceWeek(week, days, add, raceDate, ath, z) {
     const rIdx = raceDate ? weekdayIdx(raceDate) : 5;
     const isFull = week.type === "race";
+    const raceMin = isFull ? (DISTANCES[week.distance] || DISTANCES.full).raceMin : 360;
     for (let i = 0; i < 7; i++) {
       if (i === rIdx) {
-        add(i, session("race", isFull ? "RACE DAY" : "HALF RACE", isFull ? 720 : 360, "race",
+        add(i, session("race", isFull ? "RACE DAY" : "HALF RACE", raceMin, "race",
           "Follow your pacing plan. Drink until you pee, then keep drinking. Pee at least twice on the bike.", { long: true, intense: true, key: true }));
       } else if (i === rIdx - 1) {
         add(i, session("bike", "Shakeout: bike + run", 30, "ZR", "20 min easy bike with 3×30 s quick, 10 min easy jog. Rack the bike. Feet up.", {}));
       } else if (i === rIdx - 2) {
         add(i, session("swim", "Short swim", 20, "ZR", "Easy 20 min, a few strokes at race pace. Otherwise rest.", {}));
       } else if (i > rIdx) {
-        add(i, session("rest", "Off", 0, "", isFull ? "Done. Three weeks off starts now." : "Off. Walk, eat, sleep.", {}));
+        add(i, session("rest", "Off", 0, "", isFull ? "Done. Rest before the next thing." : "Off. Walk, eat, sleep.", {}));
       } else {
         const easy = [
           session("swim", "Easy swim", 30, "Z1", "Steady, with 4×50 at race pace.", {}),
@@ -516,7 +566,7 @@
       const noIntensity = EASY_TYPES.has(week.type) || NO_INTENSITY_PHASES.has(week.phase);
       if (noIntensity) {
         days.forEach(d => d.sessions.forEach(s => {
-          if (isIntenseSession(s) && s.sport !== "race") v.push({ rule: "intensity-in-easy-week", date: d.date, msg: `${d.name} ${d.date}: intensity in a ${week.typeLabel} / ${week.phaseLabel} week.` });
+          if (isIntenseSession(s) && s.sport !== "race" && !s.test) v.push({ rule: "intensity-in-easy-week", date: d.date, msg: `${d.name} ${d.date}: intensity in a ${week.typeLabel} / ${week.phaseLabel} week.` });
         }));
       }
     }
@@ -530,7 +580,7 @@
     const violations = checkSequence(allDays);
     plans.forEach(p => {
       const noI = EASY_TYPES.has(p.week.type) || NO_INTENSITY_PHASES.has(p.week.phase);
-      if (noI) p.days.forEach(d => d.sessions.forEach(s => { if (isIntenseSession(s) && s.sport !== "race") violations.push({ rule: "intensity-in-easy-week", date: d.date, msg: "intensity in easy week" }); }));
+      if (noI) p.days.forEach(d => d.sessions.forEach(s => { if (isIntenseSession(s) && s.sport !== "race" && !s.test) violations.push({ rule: "intensity-in-easy-week", date: d.date, msg: "intensity in easy week" }); }));
     });
     return { plans, violations };
   }
@@ -774,8 +824,199 @@
     return { plannedMin: plan.totalMin, doneMin: Math.round(done), pct: plan.totalMin ? Math.round(done / plan.totalMin * 100) : 0 };
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // EVALUATION → SCORE → READINESS
+  // Facts, not self-ratings. answers (all optional, blanks = worst case):
+  //   swimMax: 0 | 25 | 100 | 400 | 1000   longest non-stop swim today, yards
+  //   openWater, swimHate: bool
+  //   bikeType: "none" | road | tri | other, rideLongest: none | lt1 | 1to2 | 2to3 | 3plus (last month)
+  //   runLongestMi, runsPerWeek: number, raced: none | 10k | half | marathon
+  //   doctorOK: bool, injuries: text
+  // Growth model: the long session in each sport grows about 10% a week (swim 25%:
+  // it's mostly skill and low impact), with every 4th week a recovery week.
+  // ─────────────────────────────────────────────────────────────
+  const RIDE_MIN = { none: 0, lt1: 45, "1to2": 90, "2to3": 150, "3plus": 200 };
+  const GROW = { swim: 0.25, bike: 0.10, run: 0.10 };
+  const START = { swim: 25, bike: 30, run: 1 };          // first real session size
+  const LEARN_WEEKS = { swim: 6, bike: 3, run: 4 };      // from zero to that first session
+
+  function growWeeks(from, to, rate) {
+    if (from >= to) return 0;
+    return Math.ceil(Math.log(to / from) / Math.log(1 + rate) * 4 / 3);  // ×4/3 for recovery weeks
+  }
+  function sportWeeks(sport, now, target, a) {
+    let w = 0, from = now;
+    if (!from || from < START[sport]) { w += LEARN_WEEKS[sport]; from = START[sport]; }
+    w += growWeeks(from, target, GROW[sport]);
+    if (sport === "swim" && a.swimHate) w = Math.ceil(w * 1.15);
+    if (sport === "run" && (Number(a.runsPerWeek) || 0) <= 1) w = Math.ceil(w * 1.25);
+    return w;
+  }
+  function currentLevels(a) {
+    a = a || {};
+    const hasBike = a.bikeType && a.bikeType !== "none";
+    return {
+      swimYd:  Number(a.swimMax) || 0,
+      rideMin: hasBike ? (RIDE_MIN[a.rideLongest] || 0) : 0,
+      runMi:   Number(a.runLongestMi) || 0
+    };
+  }
+  // Swim level the week plan uses, from the longest non-stop swim
+  function swimAbilityFrom(swimMax) {
+    const y = Number(swimMax) || 0;
+    return y < 50 ? "learning" : y < 400 ? "basic" : "continuous";
+  }
+
+  function scoreSports(answers, distance) {
+    const D = DISTANCES[distance] || DISTANCES.full;
+    const lv = currentLevels(answers);
+    const mk = (sport, now, target, raceAmt, nowAmt, unit) => {
+      const weeks = sportWeeks(sport, now, target, answers || {});
+      const label = weeks <= 10 ? "Ready" : weeks <= 20 ? "Building" : "Starting";
+      return { sport, label, weeks, pctOfRace: Math.min(100, Math.round(nowAmt / raceAmt * 100)), now: nowAmt, race: raceAmt, unit };
+    };
+    return {
+      swim: mk("swim", lv.swimYd, D.target.swimYd, D.race.swimYd, lv.swimYd, "yd"),
+      bike: mk("bike", lv.rideMin, D.target.rideMin, D.race.bikeMi, Math.round(lv.rideMin / 60 * 15), "mi"),   // ~15 mph
+      run:  mk("run",  lv.runMi,   D.target.runMi,   D.race.runMi,  lv.runMi, "mi")
+    };
+  }
+  function weeksNeeded(answers, distance, hoursNow) {
+    const D = DISTANCES[distance] || DISTANCES.full;
+    const sc = scoreSports(answers, distance);
+    const limiter = ["swim", "bike", "run"].reduce((m, k) => sc[k].weeks > sc[m].weeks ? k : m, "swim");
+    // Weekly hours have to grow too: from what you train now to what this distance needs
+    const hoursWeeks = growWeeks(Math.max(1, Number(hoursNow) || 2), D.minPeakHours, RAMP);
+    const base = Math.max(sc[limiter].weeks, hoursWeeks);
+    return { weeks: Math.max(8, base + D.finishWeeks), limiter: sc[limiter].weeks >= hoursWeeks ? limiter : "hours", scores: sc };
+  }
+
+  const SPORT_WORD = { swim: "swimming", bike: "riding", run: "running", hours: "weekly training time" };
+  function fmtMonth(iso) { return toDate(iso).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", year: "numeric" }); }
+
+  // tri: the saved setup (planStart, raceDate, distance, hoursNow, hoursPeak, eval: answers)
+  function readiness(tri) {
+    tri = tri || {};
+    const a = tri.eval || {};
+    const distance = DISTANCES[tri.distance] ? tri.distance : "full";
+    const D = DISTANCES[distance];
+    const start = mondayOf(tri.planStart || todayISO());
+    const weeksOut = tri.raceDate ? weeksBetween(start, mondayOf(tri.raceDate)) : null;
+    const need = weeksNeeded(a, distance, tri.hoursNow);
+    const sc = need.scores;
+    const reasons = [], notes = [];
+    let level;
+    if (weeksOut == null) level = "unknown";
+    else if (weeksOut < need.weeks) level = "red";
+    else if (weeksOut < need.weeks + Math.max(4, Math.round(need.weeks * 0.25))) level = "yellow";
+    else level = "green";
+
+    // Plain-words reasons
+    const lv = currentLevels(a);
+    if (lv.swimYd < 25) reasons.push("You can't swim a pool length non-stop yet. Swimming is a skill: it takes weeks of lessons before any distance.");
+    else if (lv.swimYd < 400) reasons.push(`Longest non-stop swim is ${lv.swimYd} yds. The race swim is ${D.race.swimYd.toLocaleString()} yds.`);
+    if (a.swimHate) reasons.push("You don't like swimming. That's fine, but it means more early pool time and slower progress.");
+    if (!a.bikeType || a.bikeType === "none") reasons.push("No bike yet. You need one, a fit, and a few weeks of easy riding before training starts to count.");
+    else if (lv.rideMin < 90) reasons.push(`Longest ride in the last month is under ${lv.rideMin ? "an hour" : "a few minutes"}. The race bike is ${D.race.bikeMi} miles.`);
+    if (lv.runMi < D.target.runMi / 2) reasons.push(`Longest recent run is ${lv.runMi || 0} mi. Training needs to reach about ${D.target.runMi} mi${distance === "full" ? " (the race is 26.2)" : ""}. Runs grow about 10% a week or something gets hurt.`);
+    if ((Number(a.runsPerWeek) || 0) <= 1) reasons.push("Running once a week or less: the legs need a few runs a week before long runs are safe.");
+    if (weeksOut != null) reasons.unshift(`${weeksOut} weeks to race day. Getting your ${SPORT_WORD[need.limiter]} to race level safely takes about ${need.weeks}.`);
+
+    // Hours
+    let realisticPeak = null;
+    if (weeksOut != null && weeksOut >= 8) {
+      try { realisticPeak = buildSeason(Object.assign({}, tri, { distance })).realisticPeak; } catch (_) { /* too close */ }
+    }
+    const asked = Number(tri.hoursPeak) || null;
+    if (asked && asked < D.minPeakHours) {
+      notes.push(`${asked} hours a week is thin for a ${D.label}. Most people need about ${D.minPeakHours}+ at the peak.`);
+      if (level === "green") level = "yellow";
+    }
+    if (realisticPeak && asked && realisticPeak < asked * 0.85) {
+      notes.push(`At about 10% more a week, you safely top out near ${realisticPeak.toFixed(1)} hours a week before race day, not the ${asked} you entered.`);
+      if (level === "green") level = "yellow";
+    } else if (realisticPeak && level === "yellow") {
+      notes.push(`Weekly hours grow about 10% at most. Realistic peak: about ${Math.min(realisticPeak, asked || realisticPeak).toFixed(1)} hours a week.`);
+    }
+    if (!a.doctorOK) notes.push("No doctor's OK ticked yet. Get a check-up before the hard training starts.");
+    if (a.injuries) notes.push(`Injuries to watch: ${a.injuries}`);
+    if (!a.openWater && distance !== "sprint") notes.push("Never swum in open water: plan a few lake or ocean swims before race day.");
+
+    // Realistic options (stepping stones). Dates count from the plan start.
+    const options = ["sprint", "olympic", "half", "full"].map(d => {
+      const w = weeksNeeded(a, d, tri.hoursNow).weeks;
+      const date = addDays(start, w * 7);
+      return { distance: d, label: DISTANCES[d].label, weeks: w, months: Math.ceil(w / 4.35), date, month: fmtMonth(date),
+               fitsRaceDate: weeksOut != null && w <= weeksOut };
+    });
+
+    const headline = {
+      red: "Not safe in the time you have.",
+      yellow: "Tight. Doable if the plan grows slowly.",
+      green: "Enough time. Build as planned.",
+      unknown: "Add a race date to check the timeline."
+    }[level];
+    return { level, headline, distance, distanceLabel: D.label, weeksOut, weeksNeeded: need.weeks, limiter: need.limiter,
+             scores: sc, reasons, notes, options, realisticPeak, hoursPeakAsked: asked };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // TRUST BUT VERIFY: start-test results vs the evaluation answers.
+  // tests: [{kind: "swim400", value: sec} | {kind: "swimShort", value: yards}
+  //         | {kind: "run5k", value: sec, walked} | {kind: "p20" | "ride20", stopped}]
+  // Only ever moves answers DOWN. Returns { answers, changes: [{sport, msg}] }.
+  // ─────────────────────────────────────────────────────────────
+  function checkTestsVsEval(answers, tests) {
+    const a = Object.assign({}, answers || {});
+    const changes = [];
+    const latest = kind => (tests || []).filter(t => t.kind === kind).slice(-1)[0];
+    const swShort = latest("swimShort"), sw400 = latest("swim400"), run = latest("run5k");
+    const ride = [latest("p20"), latest("ride20")].filter(Boolean).slice(-1)[0];
+    const swimNow = Number(a.swimMax) || 0;
+    if (swShort && swShort.value < swimNow) {
+      const y = [0, 25, 100, 400].filter(v => v <= swShort.value).pop();
+      a.swimMax = y;
+      changes.push({ sport: "swim", msg: `Swim: you said ${swimNow} yds non-stop, the test stopped at ${swShort.value}. Plan now starts from ${y || "learning"}${y ? " yds" : ""}.` });
+    } else if (sw400 && swimNow >= 1000 && sw400.value > 15 * 60) {
+      a.swimMax = 400;
+      changes.push({ sport: "swim", msg: `Swim: a ${fmtTime(sw400.value)} 400 says 1,000+ non-stop is a stretch. Plan now starts from 400 yds.` });
+    }
+    const runNow = Number(a.runLongestMi) || 0;
+    if (run && run.walked && runNow > 3.1) {
+      a.runLongestMi = 2;
+      changes.push({ sport: "run", msg: `Run: you said ${runNow} mi, but the 5K needed walk breaks. Plan now starts from about 2 mi.` });
+    } else if (run && run.value > 40 * 60 && runNow >= 6) {
+      a.runLongestMi = 3;
+      changes.push({ sport: "run", msg: `Run: a ${fmtTime(run.value)} 5K doesn't match ${runNow}-mile runs yet. Plan now starts from about 3 mi.` });
+    }
+    const rideNow = RIDE_MIN[a.rideLongest] || 0;
+    if (ride && ride.stopped && rideNow > RIDE_MIN.lt1) {
+      a.rideLongest = "lt1";
+      changes.push({ sport: "bike", msg: "Bike: the 20-minute test was cut short. Plan now treats your longest ride as under an hour." });
+    }
+    return { answers: a, changes };
+  }
+
+  // Apply the check to a saved setup: lower answers, re-ramp hours, swim level.
+  // Returns a new tri (or the same one if nothing changed).
+  function applyTestCheck(tri) {
+    const r = checkTestsVsEval(tri.eval, tri.tests);
+    if (!r.changes.length) return { tri, changes: [] };
+    const before = readiness(tri);
+    const nt = Object.assign({}, tri, { eval: r.answers });
+    const cut = Math.pow(0.85, r.changes.length);                    // 15% less starting load per sport that came in low
+    nt.hoursNow = Math.max(2, Math.round((Number(tri.hoursNow) || 4) * cut * 2) / 2);
+    if (r.changes.some(c => c.sport === "swim") && !tri.swim400Sec) nt.swimAbility = swimAbilityFrom(r.answers.swimMax);
+    else if (r.changes.some(c => c.sport === "swim")) nt.swimAbility = swimAbilityFrom(r.answers.swimMax) === "continuous" ? tri.swimAbility : swimAbilityFrom(r.answers.swimMax);
+    const after = readiness(nt);
+    nt.testCheck = { changes: r.changes, levelBefore: before.level, levelAfter: after.level,
+                     msg: "Your tests say you're earlier than your answers. The plan moved." };
+    return { tri: nt, changes: r.changes, before, after };
+  }
+
   return {
-    DAY_NAMES, DAY_FULL, DEFAULT_TIMELINE, PHASES, WEEK_TYPES,
+    DAY_NAMES, DAY_FULL, DEFAULT_TIMELINE, PHASES, WEEK_TYPES, DISTANCES,
+    readiness, scoreSports, weeksNeeded, checkTestsVsEval, applyTestCheck, swimAbilityFrom, RIDE_MIN,
     toDate, toISO, addDays, mondayOf, weekdayIdx, weeksBetween, todayISO,
     buildSeason, buildWeekPlan, buildSeasonPlans, checkWeek, checkSequence, isLongSession, isIntenseSession,
     swimPaces, bikeTargets, runTargets, trainerMinutes, parseTime, fmtTime,
