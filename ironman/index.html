@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jax 140.6</title>
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="ironman.css" />
+</head>
+<body>
+  <div id="root"><div class="loading">Loading...</div></div>
+
+  <script src="firebase-config.js"></script>
+  <script>
+    // Load the Firebase SDK only when not running locally
+    if (!USE_LOCAL_STORE) {
+      document.write('<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"><\/script>');
+      document.write('<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"><\/script>');
+    }
+  </script>
+  <script src="local-store.js"></script>
+  <script src="ironman-engine.js"></script>
+  <script src="App.js"></script>
+  <script src="ironman-ui.js"></script>
+</body>
+</html>

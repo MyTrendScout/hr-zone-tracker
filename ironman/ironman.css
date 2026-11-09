@@ -1,0 +1,109 @@
+/* ironman.css — Jax 140.6 additions on top of the MyPaceZone styles */
+
+.im-page .card h2 { font-size: 1.05rem; }
+.im-wide { max-width: 1100px; }
+.im-head { display: flex; flex-direction: column; gap: 2px; }
+.im-coach-tag { font-size: 12px; color: #6d3fc9; font-weight: 600; }
+.im-note { font-size: 13px; color: #5b6470; margin: 6px 0; }
+.im-form-h { margin: 22px 0 6px; font-size: 0.95rem; text-transform: uppercase; letter-spacing: .04em; color: #444; }
+.im-ok { color: #0a7d4f; font-weight: 600; font-size: 14px; margin: 8px 0; }
+.im-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.im-tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #eef1f5; color: #3a4350; margin-left: 6px; font-weight: 600; }
+.im-tag-hard { background: #fde6dc; color: #9a3412; }
+.im-tag-long { background: #e3ecfb; color: #1e4f99; }
+.im-race-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; }
+.im-next { font-weight: 600; margin: 6px 0 10px; }
+
+/* histogram + legend */
+.im-hist { margin: 10px 0 6px; overflow: hidden; }
+.im-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: #444; margin-top: 8px; }
+.im-leg i, .im-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.im-dot-l { color: white; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+
+/* sessions */
+.im-session { border-left: 4px solid #ccd3dc; padding: 8px 10px; margin: 8px 0; background: #fafbfc; border-radius: 6px; }
+.im-sport-swim { border-left-color: #2a9fd6; }
+.im-sport-bike { border-left-color: #d99a2b; }
+.im-sport-run { border-left-color: #b23a12; }
+.im-sport-strength, .im-sport-core { border-left-color: #6b7280; }
+.im-sport-race { border-left-color: #111; background: #fff6d6; }
+.im-sport-rest { border-left-color: #e5e7eb; color: #888; }
+.im-session-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.im-icon { width: 20px; text-align: center; }
+.im-meta { font-size: 12px; color: #5b6470; }
+.im-detail { font-size: 13px; color: #333; margin-top: 4px; line-height: 1.45; }
+.im-beat { font-size: 12px; margin-top: 4px; color: #555; }
+.im-beat summary { cursor: pointer; color: #2f6fbf; }
+.im-beat p { margin: 4px 0 0; }
+.im-makeup select { font-size: 12px; padding: 4px 6px; margin-top: 6px; width: auto; }
+
+/* week strip on dashboard */
+.im-weekstrip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 10px 0; }
+.im-daychip { background: #f4f6f9; border-radius: 6px; padding: 6px 4px; text-align: center; font-size: 11px; display: flex; flex-direction: column; gap: 2px; min-height: 64px; }
+.im-daychip.today { outline: 2px solid #111; }
+.im-chip-s { display: block; white-space: nowrap; }
+.im-chip-s.hard { color: #9a3412; font-weight: 700; }
+.im-chip-s.long { color: #1e4f99; font-weight: 700; }
+
+/* week page */
+.im-weeknav { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.im-weeknav button { width: auto; margin: 0; }
+.im-weektitle { text-align: center; font-size: 14px; }
+.im-days { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.im-days .card { margin-bottom: 0; }
+.im-day.today { outline: 2px solid #111; }
+.im-day-h { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #eee; padding-bottom: 6px; }
+.im-day-h span { font-size: 12px; color: #666; }
+
+/* season blocks */
+.im-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.im-table th, .im-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+.im-table th { font-size: 12px; color: #666; }
+.im-blocks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.im-block { background: #f7f8fa; border-radius: 8px; padding: 8px; }
+.im-block-h { font-size: 12px; font-weight: 700; color: #444; margin-bottom: 4px; }
+.im-wk { display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; width: 100%; text-align: left; background: white; color: #222;
+         border: 1px solid #e3e6ea; border-left: 5px solid #999; border-radius: 6px; padding: 5px 7px; margin: 0 0 4px; font-size: 12px; cursor: pointer; }
+.im-wk:hover { background: #f0f4fa; }
+.im-wk.cur { outline: 2px solid #111; }
+.im-wk-d { font-weight: 700; }
+.im-wk-h { margin-left: auto; color: #555; }
+.im-wk-g { font-size: 10px; color: #6b7280; }
+.im-t-recovery, .im-t-intro, .im-t-taper { opacity: .75; }
+.im-ev { flex-basis: 100%; font-size: 11px; font-weight: 700; }
+.im-ev-race { color: #111; } .im-ev-half { color: #b23a12; } .im-ev-register { color: #0a7d4f; }
+
+/* zones card */
+.im-two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 8px; }
+.im-two h4 { margin: 8px 0 4px; font-size: 13px; color: #444; }
+.im-kv { display: flex; justify-content: space-between; font-size: 13px; border-bottom: 1px dashed #eee; padding: 2px 0; }
+.im-list { padding-left: 18px; font-size: 14px; }
+
+/* coach */
+.im-coach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-bottom: 16px; }
+.im-coach-grid .card { margin-bottom: 0; }
+.im-coach-h { display: flex; justify-content: space-between; align-items: center; }
+.im-coach-h h3 { margin: 0; }
+.im-bar { height: 6px; background: #eef1f5; border-radius: 3px; overflow: hidden; margin: 4px 0 8px; }
+.im-bar i { display: block; height: 100%; background: #0a7d4f; }
+.im-w { font-size: 13px; margin: 6px 0; }
+.im-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.im-actions button { width: auto; margin: 0; }
+.im-flag { color: #9a3412; margin: 4px 0; }
+.im-rp ul { padding-left: 18px; }
+.im-rp li { margin: 6px 0; }
+textarea { width: 100%; font: inherit; padding: 8px; border: 1px solid #ddd; border-radius: 8px; }
+
+@media (max-width: 600px) {
+  .im-two { grid-template-columns: 1fr; }
+  .im-weekstrip { gap: 2px; }
+  .im-daychip { font-size: 10px; padding: 4px 2px; }
+}
+@media print {
+  .no-print, header button, .btn-back { display: none !important; }
+  body { background: white; }
+  .card { box-shadow: none; border: 1px solid #ddd; }
+}
+
+/* coach view gets the full width when it has athlete cards */
+.page:has(.im-coach-grid) { max-width: 1100px; }
