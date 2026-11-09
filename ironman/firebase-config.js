@@ -32,7 +32,7 @@ const STRAVA_CONFIG = {
 // Coach login. JB: edit this on GitHub before telling anyone the link.
 // While it starts with CHANGE_ME, coach login is disabled.
 const ADMIN = {
-  password: "CHANGE_ME_before_upload",
+  password: "BoatHouse34210",
   id:       "coach",
   name:     "Coach JB",
   admin:    true
